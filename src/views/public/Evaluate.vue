@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, Timer, User, Check } from '@element-plus/icons-vue'
+import { Timer, User, Check } from '@element-plus/icons-vue'
 import PublicShell from '../../layouts/PublicShell.vue'
 import IconGlyph from '../../components/IconGlyph.vue'
 import { api, unwrap } from '../../lib/api'
@@ -14,7 +14,6 @@ const task = ref<EvaluationTask | null>(null)
 const scores = reactive<Record<string, number | undefined>>({})
 const loading = ref(true)
 const submitting = ref(false)
-const rulesOpen = ref(false)
 const now = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | undefined
 
@@ -105,14 +104,16 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <div v-if="loading" class="score-card loading-card">正在加载评价任务...</div>
     <article v-else-if="task" class="score-card">
       <header class="task-head">
-        <img :src="task.target.avatar||`/assets/avatar/default-${task.target.gender==='female'?'female':'male'}.svg`" alt="员工默认头像"/>
-        <div class="target-copy">
-          <span>当前评价对象</span>
-          <h2>{{ task.target.name }}</h2>
-          <div class="tags">
-            <span>{{ task.target.gender==='female'?'女':task.target.gender==='male'?'男':'未知' }}</span>
-            <span>{{ task.target.teamName }}</span>
-            <span>{{ task.target.position }}</span>
+        <div class="target-label">当前评价对象</div>
+        <div class="target-main">
+          <img :src="task.target.avatar||`/assets/avatar/default-${task.target.gender==='female'?'female':'male'}.svg`" alt="员工默认头像"/>
+          <div class="target-copy">
+            <h2>{{ task.target.name }}</h2>
+            <div class="target-meta">
+              <span>{{ task.target.gender==='female'?'女':task.target.gender==='male'?'男':'未知' }}</span>
+              <span>{{ task.target.teamName }}</span>
+              <span>{{ task.target.position }}</span>
+            </div>
           </div>
         </div>
       </header>
@@ -131,7 +132,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       <section class="score-fields">
         <label v-for="(rule,index) in enabledRules" :key="rule.id" class="score-row">
           <span class="score-icon"><IconGlyph :name="index===0?'briefcase':index===1?'heart':'team'" :size="22"/></span>
-          <span class="score-copy"><strong>{{rule.name}}</strong><small>{{rule.min}}-{{rule.max}} 分</small></span>
+          <span class="score-copy"><strong>{{rule.name}}</strong><small>请输入 {{rule.min}}-{{rule.max}} 分</small></span>
           <span class="input-wrap" :class="{valid:Number.isInteger(scores[rule.id])&&Number(scores[rule.id])>=rule.min&&Number(scores[rule.id])<=rule.max}">
             <input :value="scores[rule.id]??''" type="text" inputmode="numeric" maxlength="2" :placeholder="`${rule.min}-${rule.max}`" @input="onScoreInput(rule,$event)" @blur="onScoreBlur(rule)"/>
           </span>
@@ -146,12 +147,9 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <em>分</em>
       </section>
 
-      <section class="rule-card">
-        <button class="rule-title" type="button" @click="rulesOpen=!rulesOpen">
-          <span><strong>综合评分计算规则</strong><small>仅用于本次匿名评分</small></span>
-          <el-icon class="rule-arrow" :size="18"><component :is="rulesOpen?ArrowUp:ArrowDown"/></el-icon>
-        </button>
-        <div v-show="rulesOpen" class="rule-body">
+      <section class="rule-card" aria-label="综合评分计算规则">
+        <div class="rule-title"><strong>综合评分计算规则</strong><small>仅用于本次匿名评分</small></div>
+        <div class="rule-body">
           <p>{{formula}}</p>
           <small>计算结果{{task.rounding==='round'?'四舍五入取整':task.rounding==='one_decimal'?'保留1位小数':'直接取整'}}；每项仅可填写对应范围内的整数。</small>
         </div>
@@ -170,7 +168,6 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 </template>
 
 <style scoped>
-.score-card{padding:22px 38px 30px;border:1px solid rgba(233,91,44,.16);border-radius:18px;background:rgba(255,255,255,.97);box-shadow:var(--shadow)}.loading-card{padding:78px 24px;text-align:center;color:var(--muted)}.task-head{display:grid;grid-template-columns:118px 1fr;gap:22px;align-items:center}.task-head img{width:118px;height:118px;border:6px solid #fff;border-radius:50%;background:#fff7f1;box-shadow:0 12px 28px rgba(80,48,31,.13)}.target-copy span{color:var(--muted);font-size:13px;font-weight:650}.target-copy h2{margin:6px 0 12px;color:var(--ink);font-size:34px;line-height:1.1}.tags{display:flex;gap:8px;flex-wrap:wrap}.tags span{padding:6px 12px;border:1px solid #efc3aa;border-radius:999px;color:#4a3b36;background:#fffaf6;font-size:13px}.timer-card,.progress-card{display:flex;align-items:center;gap:10px;margin-top:18px;padding:13px 15px;border:1px solid #efc3aa;border-radius:12px;color:#704e3f;background:#fff8f2}.timer-card b{margin-left:auto;color:var(--brand);font-size:24px;letter-spacing:.04em}.timer-card.expired{border-color:#e8b8b5;color:#9b2c24;background:#fff5f4}.timer-card.expired b{color:#9b2c24}.progress-card{display:grid;grid-template-columns:150px 1fr}.progress-card strong{display:block;color:var(--ink)}.progress-card small{color:var(--muted);font-size:12px}.score-fields{margin-top:8px}.score-row{display:grid;grid-template-columns:48px minmax(132px,1fr) minmax(140px,210px) 22px;gap:14px;align-items:center;min-height:88px;border-bottom:1px solid var(--line)}.score-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:50%;color:var(--brand);background:#fff1e8}.score-copy{display:grid;gap:4px}.score-copy strong{color:var(--ink);font-size:20px}.score-copy small{color:var(--subtle);font-size:12px}.input-wrap{display:block;border:1.5px solid #efa67d;border-radius:12px;background:#fff;transition:.18s}.input-wrap:focus-within{border-color:var(--brand);box-shadow:var(--focus)}.input-wrap.valid{border-color:var(--success);background:#fbfff9}.score-row input{width:100%;height:52px;padding:0 12px;border:0;border-radius:12px;outline:none;background:transparent;text-align:center;font-size:22px;font-weight:760}.score-row input::placeholder{color:#b8aca6;font-size:15px;font-weight:500}.score-row i{font-style:normal;font-size:16px}.total-card{display:flex;align-items:baseline;justify-content:center;gap:8px;margin-top:20px;padding:18px;border:1px solid #efc3aa;border-radius:14px;color:#8f8078;background:linear-gradient(110deg,#fff8f2,#fffaf8)}.total-card.ready{color:var(--brand);background:linear-gradient(110deg,#fff0e2,#fff8f3)}.trophy{align-self:center;margin-right:4px}.total-card strong{font-size:20px}.total-card b{font-size:40px;line-height:1}.total-card em{font-style:normal;font-size:18px;font-weight:700}.rule-card{margin-top:14px;padding:0 16px 12px;border:1px solid #efd0bd;border-radius:12px;background:#fffaf7}.rule-title{display:flex;align-items:center;justify-content:space-between;width:100%;padding:14px 0 11px;border:0;color:var(--brand);background:transparent;text-align:left;cursor:pointer}.rule-title>span{display:grid;gap:3px}.rule-title strong{font-size:15px}.rule-title small{color:var(--subtle);font-size:12px}.rule-body{border-top:1px solid #f0d8c8}.rule-body p{margin:12px 0 5px;font-weight:650}.rule-body small{color:var(--muted);line-height:1.7}.submit-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:58px;margin-top:20px;border:0;border-radius:999px;color:#fff;background:linear-gradient(100deg,var(--brand),var(--brand-2));box-shadow:0 13px 28px rgba(233,91,44,.2);font-size:21px;font-weight:800;cursor:pointer}.submit-btn:disabled{box-shadow:none;cursor:not-allowed;opacity:.48}.remaining{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:16px;color:#4b423f}.remaining b{color:var(--brand);font-size:18px}
-@media(max-width:640px){.score-card{padding:18px 16px 23px;border-radius:16px}.task-head{grid-template-columns:82px 1fr;gap:14px}.task-head img{width:82px;height:82px;border-width:4px}.target-copy h2{font-size:26px}.tags{gap:6px}.tags span{padding:5px 9px;font-size:12px}.progress-card{grid-template-columns:1fr;gap:8px}.score-row{grid-template-columns:40px minmax(88px,1fr) 92px 17px;gap:8px;min-height:78px}.score-icon{width:38px;height:38px}.score-copy strong{font-size:16px;white-space:nowrap}.score-copy small{font-size:11px}.score-row input{height:46px;padding:0 5px;font-size:20px}.score-row input::placeholder{font-size:13px}.score-row i{font-size:14px}.total-card{padding:15px 5px}.total-card strong{font-size:18px}.total-card b{font-size:34px}.submit-btn{height:54px;font-size:20px}.loading-card{padding:64px 20px}}
-@media(max-width:380px){.score-row{grid-template-columns:36px minmax(74px,1fr) 78px 15px}.score-copy strong{font-size:15px}.score-row input{font-size:18px}}
+.score-card{overflow:hidden;border:1px solid #dedbd6;border-radius:8px;background:#fff;box-shadow:0 20px 48px rgba(48,38,29,.1)}.loading-card{padding:78px 24px;text-align:center;color:var(--muted)}.task-head{padding:26px 30px 24px;border-bottom:1px solid #e7e3de}.target-label{margin-bottom:15px;color:var(--ink);font-size:15px;font-weight:780}.target-main{display:flex;align-items:center;gap:18px}.task-head img{width:74px;height:74px;border-radius:50%;background:#f8eee8;box-shadow:0 0 0 5px #fff,0 0 0 6px #eee5de}.target-copy h2{margin:0 0 8px;color:var(--ink);font-size:30px;line-height:1.1}.target-meta{display:flex;gap:0;color:var(--muted);font-size:14px}.target-meta span+span{margin-left:12px;padding-left:12px;border-left:1px solid #d9d4cf}.timer-card,.progress-card{display:flex;align-items:center;gap:10px;margin:18px 30px 0;padding:12px 14px;border:1px solid #f1cbb9;border-radius:8px;color:#7b5445;background:#fff8f4}.timer-card b{margin-left:auto;color:var(--brand);font-size:21px;letter-spacing:.04em}.timer-card.expired{border-color:#e8b8b5;color:#9b2c24;background:#fff5f4}.timer-card.expired b{color:#9b2c24}.progress-card{display:grid;grid-template-columns:132px 1fr;background:#fff}.progress-card strong{display:block;color:var(--ink);font-size:15px}.progress-card small{color:var(--muted);font-size:12px}.score-fields{padding:4px 30px 0}.score-row{display:grid;grid-template-columns:44px minmax(160px,1fr) minmax(150px,214px) 20px;gap:14px;align-items:center;min-height:82px;border-bottom:1px solid #e9e5e0}.score-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:8px;color:var(--brand);background:#fff1e8}.score-copy{display:grid;gap:3px}.score-copy strong{color:var(--ink);font-size:18px}.score-copy small{color:var(--subtle);font-size:12px}.input-wrap{display:block;border:1px solid #cfcac4;border-radius:8px;background:#fff;transition:.18s}.input-wrap:focus-within{border-color:var(--brand);box-shadow:var(--focus)}.input-wrap.valid{border-color:var(--success);background:#fbfff9}.score-row input{width:100%;height:48px;padding:0 12px;border:0;border-radius:8px;outline:none;background:transparent;text-align:center;font-size:22px;font-weight:760}.score-row input::placeholder{color:#aaa29b;font-size:14px;font-weight:500}.score-row i{font-style:normal;font-size:15px}.total-card{display:flex;align-items:baseline;gap:8px;margin:22px 30px 0;padding:17px 18px;border:1px solid #f0d5c4;border-radius:8px;color:#6d625b;background:#fffaf6}.total-card.ready{color:var(--brand);background:#fff6ef}.trophy{display:grid;place-items:center;margin-right:3px;color:var(--brand)}.total-card strong{font-size:18px}.total-card b{margin-left:auto;font-size:38px;line-height:1}.total-card em{font-style:normal;font-size:16px;font-weight:700}.rule-card{margin:20px 30px 0;padding-top:18px;border-top:1px solid #e9e5e0}.rule-title{display:grid;gap:3px}.rule-title strong{color:var(--ink);font-size:15px}.rule-title small{color:var(--subtle);font-size:12px}.rule-body p{margin:10px 0 4px;color:#4b443f;font-size:14px;font-weight:650}.rule-body small{color:var(--muted);font-size:12px;line-height:1.7}.submit-btn{display:flex;align-items:center;justify-content:center;gap:8px;width:calc(100% - 60px);height:54px;margin:22px 30px 0;border:0;border-radius:8px;color:#fff;background:var(--brand);box-shadow:0 10px 22px rgba(233,91,44,.2);font-size:18px;font-weight:800;cursor:pointer}.submit-btn:hover:not(:disabled){background:#d94d21}.submit-btn:disabled{box-shadow:none;cursor:not-allowed;opacity:.48}.remaining{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 0 24px;color:#5e5651;font-size:14px}.remaining b{color:var(--brand);font-size:16px}
+@media(max-width:640px){.task-head{padding:22px 18px}.target-main{gap:14px}.task-head img{width:64px;height:64px}.target-copy h2{font-size:25px}.target-meta{flex-wrap:wrap;gap:4px;font-size:12px}.target-meta span+span{margin-left:8px;padding-left:8px}.timer-card,.progress-card{margin-left:18px;margin-right:18px}.progress-card{grid-template-columns:1fr;gap:8px}.score-fields{padding:4px 18px 0}.score-row{grid-template-columns:36px minmax(90px,1fr) 94px 16px;gap:8px;min-height:76px}.score-icon{width:34px;height:34px}.score-copy strong{font-size:15px;white-space:nowrap}.score-copy small{font-size:10px}.score-row input{height:44px;padding:0 4px;font-size:19px}.score-row input::placeholder{font-size:12px}.score-row i{font-size:13px}.total-card,.rule-card{margin-left:18px;margin-right:18px}.total-card{padding:15px 13px}.total-card strong{font-size:16px}.total-card b{font-size:32px}.submit-btn{width:calc(100% - 36px);margin-left:18px;margin-right:18px;height:52px;font-size:17px}.remaining{margin-bottom:20px}.loading-card{padding:64px 20px}}
 </style>
