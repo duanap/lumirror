@@ -32,6 +32,14 @@ _Avoid_: Review, score
 The anonymous dimension values and computed total recorded for one completed evaluation task.
 _Avoid_: Result, rating
 
+**Score Dimension**:
+A configurable measure collected for every target in one evaluation activity.
+_Avoid_: Field, metric
+
+**Contribution Direction**:
+Whether a score dimension adds to or subtracts from the weighted total.
+_Avoid_: Calculation type, positive/negative score
+
 **Timed Invite**:
 A single-use entry link whose five-minute lifetime starts on first opening.
 _Avoid_: Temporary code, expiring activity

@@ -4,6 +4,7 @@ export interface ScoreRule {
   min: number
   max: number
   weight: number
+  operation: 'add' | 'subtract'
   enabled: boolean
 }
 

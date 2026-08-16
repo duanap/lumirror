@@ -11,5 +11,5 @@ defineProps<{label:string;value:string|number;hint?:string;color?:string}>()
 </template>
 
 <style scoped>
-.stat-card{position:relative;min-height:126px;padding:20px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,#fff,#fffaf6);box-shadow:var(--shadow-soft);overflow:hidden}.stat-card:after{position:absolute;right:-24px;top:-26px;width:76px;height:76px;border-radius:50%;background:#fff0e7;content:""}span{position:relative;color:var(--muted);font-size:13px;font-weight:700}strong{position:relative;display:block;margin:14px 0 7px;font-size:31px;line-height:1;font-weight:820}small{position:relative;color:var(--subtle);word-break:break-all}
+.stat-card{position:relative;min-height:126px;padding:20px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(180deg,var(--surface),var(--surface-warm));box-shadow:var(--shadow-soft);overflow:hidden}.stat-card:after{position:absolute;right:-24px;top:-26px;width:76px;height:76px;border-radius:50%;background:var(--admin-active);content:""}span{position:relative;color:var(--muted);font-size:13px;font-weight:700}strong{position:relative;display:block;margin:14px 0 7px;font-size:31px;line-height:1;font-weight:820}small{position:relative;color:var(--subtle);word-break:break-all}
 </style>

@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 
 const DATABASE_KEY = 'employee_review_db_v1'
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const COLLECTION_KEYS = [
   'users', 'departments', 'teams', 'employees', 'periods', 'evaluationCodes',
   'verifyCodes', 'tasks', 'scores', 'timedInvites', 'logs'
@@ -97,7 +97,8 @@ export class RelationalSqliteStorage {
       CREATE TABLE IF NOT EXISTS evaluation_rules (
         evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
         rule_id TEXT NOT NULL, name TEXT NOT NULL, min_value REAL NOT NULL, max_value REAL NOT NULL,
-        weight REAL NOT NULL, enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+        weight REAL NOT NULL, operation TEXT NOT NULL DEFAULT 'add' CHECK (operation IN ('add', 'subtract')),
+        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
         payload_json TEXT NOT NULL, list_order INTEGER NOT NULL, PRIMARY KEY (evaluation_id, rule_id)
       );
       CREATE TABLE IF NOT EXISTS evaluation_participants (
@@ -151,6 +152,9 @@ export class RelationalSqliteStorage {
       CREATE INDEX IF NOT EXISTS idx_logs_created ON audit_logs(created_at);
       PRAGMA user_version = ${SCHEMA_VERSION};
     `)
+    const ruleColumns = new Set(this.database.prepare('PRAGMA table_info(evaluation_rules)').all().map((column) => column.name))
+    if (!ruleColumns.has('operation')) this.database.exec("ALTER TABLE evaluation_rules ADD COLUMN operation TEXT NOT NULL DEFAULT 'add' CHECK (operation IN ('add', 'subtract'))")
+    this.database.prepare('UPDATE app_state SET schema_version = ? WHERE singleton = 1 AND schema_version < ?').run(SCHEMA_VERSION,SCHEMA_VERSION)
   }
 
   async get(key, options = {}) {
@@ -163,7 +167,12 @@ export class RelationalSqliteStorage {
       collections[collection] = this.database.prepare(`SELECT payload_json FROM ${table} ORDER BY list_order`).all().map((row) => parseJson(row.payload_json, {}))
     }
 
-    const rules = rowsByParent(this.database.prepare('SELECT evaluation_id, payload_json FROM evaluation_rules ORDER BY evaluation_id, list_order').all(), 'evaluation_id')
+    const rules = new Map()
+    for (const row of this.database.prepare('SELECT evaluation_id, operation, payload_json FROM evaluation_rules ORDER BY evaluation_id, list_order').all()) {
+      const items = rules.get(row.evaluation_id) || []
+      items.push({...parseJson(row.payload_json,{}),operation:row.operation === 'subtract' ? 'subtract' : 'add'})
+      rules.set(row.evaluation_id,items)
+    }
     const participants = rowsByParent(this.database.prepare('SELECT evaluation_id, employee_id FROM evaluation_participants ORDER BY evaluation_id, list_order').all(), 'evaluation_id', 'employee_id')
     const targets = rowsByParent(this.database.prepare('SELECT evaluation_id, employee_id FROM evaluation_targets ORDER BY evaluation_id, list_order').all(), 'evaluation_id', 'employee_id')
     collections.evaluationCodes = collections.evaluationCodes.map((item) => ({
@@ -219,12 +228,12 @@ export class RelationalSqliteStorage {
       for (const [index,item] of (database.periods || []).entries()) insertPeriod.run(item.id,item.name,item.status || 'active',item.startTime,item.endTime,json(item),index)
 
       const insertEvaluation = this.database.prepare('INSERT INTO evaluation_activities (id, code, link_code, name, period_id, department_id, team_id, status, start_time, end_time, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      const insertRule = this.database.prepare('INSERT INTO evaluation_rules (evaluation_id, rule_id, name, min_value, max_value, weight, enabled, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      const insertRule = this.database.prepare('INSERT INTO evaluation_rules (evaluation_id, rule_id, name, min_value, max_value, weight, operation, enabled, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const insertParticipant = this.database.prepare('INSERT INTO evaluation_participants (evaluation_id, employee_id, list_order) VALUES (?, ?, ?)')
       const insertTarget = this.database.prepare('INSERT INTO evaluation_targets (evaluation_id, employee_id, list_order) VALUES (?, ?, ?)')
       for (const [index,item] of (database.evaluationCodes || []).entries()) {
         insertEvaluation.run(item.id,item.code,item.linkCode,item.name,item.periodId,item.departmentId,item.teamId,item.status || 'active',item.startTime,item.endTime,json(without(item,['rules','participantEmployeeIds','targetEmployeeIds'])),index)
-        for (const [ruleIndex,rule] of (item.rules || []).entries()) insertRule.run(item.id,rule.id,rule.name,Number(rule.min),Number(rule.max),Number(rule.weight ?? 100),rule.enabled ? 1 : 0,json(rule),ruleIndex)
+        for (const [ruleIndex,rule] of (item.rules || []).entries()) insertRule.run(item.id,rule.id,rule.name,Number(rule.min),Number(rule.max),Number(rule.weight ?? 100),rule.operation === 'subtract' ? 'subtract' : 'add',rule.enabled ? 1 : 0,json({...rule,operation:rule.operation === 'subtract' ? 'subtract' : 'add'}),ruleIndex)
         for (const [participantIndex,employeeId] of (item.participantEmployeeIds || []).entries()) insertParticipant.run(item.id,employeeId,participantIndex)
         for (const [targetIndex,employeeId] of (item.targetEmployeeIds || []).entries()) insertTarget.run(item.id,employeeId,targetIndex)
       }

@@ -1,7 +1,7 @@
-// Employee Anonymous Review - EdgeOne Edge Function v1.3.0
+// Employee Anonymous Review - API Runtime v1.4.0
 // Single-file runtime entry for maximum EdgeOne compatibility.
 
-const RUNTIME_VERSION = '1.3.0'
+const RUNTIME_VERSION = '1.4.0'
 const DATABASE_KEY = 'employee_review_db_v1'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -12,9 +12,9 @@ const PASSWORD_ALGORITHM = 'pbkdf2-sha256'
 const PASSWORD_ITERATIONS = 210000
 
 const DEFAULT_RULES = [
-  { id: 'ability', name: '工作能力', min: 60, max: 99, weight: 100, enabled: true },
-  { id: 'attitude', name: '工作态度', min: 60, max: 99, weight: 100, enabled: true },
-  { id: 'collaboration', name: '协作能力', min: 60, max: 99, weight: 100, enabled: true }
+  { id: 'ability', name: '工作能力', min: 60, max: 99, weight: 100, operation: 'add', enabled: true },
+  { id: 'attitude', name: '工作态度', min: 60, max: 99, weight: 100, operation: 'add', enabled: true },
+  { id: 'collaboration', name: '协作能力', min: 60, max: 99, weight: 100, operation: 'add', enabled: true }
 ]
 const DEFAULT_ROUNDING = 'one_decimal'
 
@@ -287,6 +287,7 @@ function migrateDatabase(db) {
   }
   for (const evaluation of db.evaluationCodes) {
     evaluation.rules = Array.isArray(evaluation.rules) && evaluation.rules.length ? evaluation.rules : copyJson(DEFAULT_RULES)
+    evaluation.rules = evaluation.rules.map((rule) => ({...rule,operation:rule.operation === 'subtract' ? 'subtract' : 'add'}))
     evaluation.rounding ||= DEFAULT_ROUNDING
     evaluation.participantMode ||= 'quantity'
     evaluation.excludeSelf = Boolean(evaluation.excludeSelf)
@@ -543,15 +544,35 @@ function computeTotal(scores,rules,rounding) {
     const value = Number(scores[rule.id])
     if (!Number.isInteger(value) || value < rule.min || value > rule.max) return null
   }
-  const weights = enabled.map((rule) => Number(rule.weight))
-  const sumWeight = weights.reduce((sum,weight) => sum + weight,0)
-  const value = weights.every((weight) => weight === 100)
+  const equalAverage = enabled.every((rule) => (rule.operation || 'add') === 'add' && Number(rule.weight) === 100)
+  const netWeight = enabled.reduce((sum,rule) => sum + ((rule.operation || 'add') === 'subtract' ? -1 : 1) * Number(rule.weight),0)
+  const value = equalAverage
     ? enabled.reduce((sum,rule) => sum + Number(scores[rule.id]), 0) / enabled.length
-    : enabled.reduce((sum,rule) => sum + Number(scores[rule.id]) * Number(rule.weight) / 100, 0)
-  if (!weights.every((weight) => weight === 100) && sumWeight !== 100) return null
+    : enabled.reduce((sum,rule) => sum + ((rule.operation || 'add') === 'subtract' ? -1 : 1) * Number(scores[rule.id]) * Number(rule.weight) / 100, 0)
+  if (!equalAverage && netWeight !== 100) return null
   if (rounding === 'one_decimal') return Math.round(value * 10) / 10
   if (rounding === 'floor') return Math.floor(value)
   return Math.round(value)
+}
+
+function prepareScoreRules(inputRules) {
+  if (!Array.isArray(inputRules) || inputRules.length < 1 || inputRules.length > 12) throw httpError('评分维度数量必须为 1-12 个')
+  const rules = inputRules.map((item,index) => ({
+    id:normalize(item.id) || `dimension_${index+1}`,
+    name:normalize(item.name),
+    min:Number(item.min),max:Number(item.max),weight:Number(item.weight),
+    operation:item.operation === 'subtract' ? 'subtract' : 'add',enabled:Boolean(item.enabled)
+  }))
+  if (new Set(rules.map((rule) => rule.id)).size !== rules.length || rules.some((rule) => !/^[A-Za-z0-9_-]{1,48}$/.test(rule.id))) throw httpError('评分维度标识无效或重复')
+  if (rules.some((rule) => !rule.name || rule.name.length > 30)) throw httpError('评分维度名称不能为空且不能超过 30 个字符')
+  if (rules.some((rule) => !Number.isInteger(rule.min)||!Number.isInteger(rule.max)||rule.min<0||rule.max>99||rule.min>=rule.max)) throw httpError('评分范围必须是 0-99 内递增的整数')
+  if (rules.some((rule) => !Number.isInteger(rule.weight)||rule.weight<0||rule.weight>100)) throw httpError('计入比例必须是 0-100 的整数')
+  const enabled = rules.filter((rule) => rule.enabled)
+  if (!enabled.length) throw httpError('至少启用 1 个评分维度')
+  const equalAverage = enabled.every((rule) => rule.operation === 'add' && rule.weight === 100)
+  const netWeight = enabled.reduce((sum,rule) => sum + (rule.operation === 'subtract' ? -1 : 1) * rule.weight,0)
+  if (!equalAverage && netWeight !== 100) throw httpError('启用维度的净计入比例必须为 100%，或全部使用 100% 等权平均')
+  return rules
 }
 function activityView(db,evaluation) {
   const verifies = db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id)
@@ -1457,7 +1478,10 @@ async function adminRoutes(context,path,method,db) {
     const participantCount = participantMode === 'selected' ? participantEmployeeIds.length : Number(input.participantCount)
     if (!Number.isInteger(participantCount) || participantCount < 1 || participantCount > 200) return fail('邀请码数量必须是 1-200 的整数')
 
-    let period = db.periods.find((x) => x.id === input.periodId)
+    const periodMode = input.periodMode === 'existing' ? 'existing' : 'new'
+    let period = periodMode === 'existing' ? db.periods.find((x) => x.id === input.periodId) : null
+    if (periodMode === 'existing' && !period) return fail('请选择有效的评价周期')
+    if (period && (parseTime(input.startTime) < parseTime(period.startTime) || parseTime(input.endTime) > parseTime(period.endTime))) return fail('评价活动时间必须处于所选周期时间范围内')
     if (!period) {
       period = {
         id:randomId('period'),name:normalize(input.periodName)||`${normalize(input.name)}周期`,
@@ -1470,7 +1494,7 @@ async function adminRoutes(context,path,method,db) {
       id:randomId('eval'),code:await generateEvaluationCode(db),name:normalize(input.name),periodId:period.id,
       linkCode:generateUniqueLinkCode(db),
       teamId:team.id,departmentId:team.departmentId,status:'active',startTime:input.startTime,endTime:input.endTime,
-      rules:copyJson(Array.isArray(input.rules)&&input.rules.length?input.rules:DEFAULT_RULES),rounding:input.rounding||DEFAULT_ROUNDING,
+      rules:prepareScoreRules(Array.isArray(input.rules)&&input.rules.length?input.rules:DEFAULT_RULES),rounding:input.rounding||DEFAULT_ROUNDING,
       participantMode,participantEmployeeIds,targetMode,targetEmployeeIds,excludeSelf:input.excludeSelf !== false,
       createdAt:nowText(),updatedAt:nowText()
     }
@@ -1480,7 +1504,7 @@ async function adminRoutes(context,path,method,db) {
       count:participantMode==='quantity'?participantCount:0
     })
     await saveDatabase(context,db)
-    return ok({activity:activityView(db,evaluation),verifyCodes:generated.codes,participantCount,taskCount:generated.taskCount,targetCount:generated.targetCount})
+    return ok({activity:activityView(db,evaluation),period,verifyCodes:generated.codes,participantCount,taskCount:generated.taskCount,targetCount:generated.targetCount})
   }
   match = path.match(/^\/admin\/evaluation-codes\/([^/]+)$/)
   if (match && method === 'PUT') {
@@ -1638,12 +1662,15 @@ async function adminRoutes(context,path,method,db) {
     const employees = enrichEmployees(db).filter((x) => targetIds.has(x.id))
     const items = employees.map((employee) => {
       const scores = scoresForActivity.filter((s) => s.targetEmployeeId === employee.id)
-      const average = (id) => scores.length ? Math.round(scores.reduce((a,s) => a + Number(s.values[id] || 0),0) / scores.length * 10) / 10 : '--'
+      const average = (id) => {
+        const values = scores.map((score) => Number(score.values?.[id])).filter(Number.isFinite)
+        return values.length ? Math.round(values.reduce((sum,value) => sum + value,0) / values.length * 10) / 10 : '--'
+      }
       const total = scores.length ? Math.round(scores.reduce((a,s) => a + Number(s.total),0) / scores.length * 10) / 10 : '--'
       return {
         id:employee.id,name:employee.name,genderLabel:employee.gender==='female'?'女':employee.gender==='male'?'男':'未知',
         departmentName:employee.departmentName,teamName:employee.teamName,position:employee.position,reviewCount:scores.length,
-        ability:average('ability'),attitude:average('attitude'),collaboration:average('collaboration'),total
+        values:Object.fromEntries(rules.filter((rule) => rule.enabled).map((rule) => [rule.id,average(rule.id)])),total
       }
     }).sort((a,b) => Number(b.total==='--'?-1:b.total)-Number(a.total==='--'?-1:a.total)).map((x,i) => ({...x,rank:x.total==='--'?'--':i+1}))
     return ok({
@@ -1669,13 +1696,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
-    const rules = input.rules || []
-    const enabledWeights = rules.filter((x) => x.enabled).map((x) => Number(x.weight))
-    const sum = enabledWeights.reduce((s,x) => s + x,0)
-    const isEqualAverage = enabledWeights.length > 0 && enabledWeights.every((x) => x === 100)
-    if (!isEqualAverage && sum !== 100) return fail('启用维度权重合计必须为 100%，或全部设置为 100% 使用等权平均')
-    if (rules.some((x) => !Number.isInteger(x.min)||!Number.isInteger(x.max)||x.min<60||x.max>99||x.min>=x.max)) return fail('评分范围配置无效')
-    evaluation.rules = copyJson(rules)
+    evaluation.rules = prepareScoreRules(input.rules || [])
     evaluation.rounding = input.rounding || DEFAULT_ROUNDING
     evaluation.updatedAt = nowText()
     await saveDatabase(context,db)

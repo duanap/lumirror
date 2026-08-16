@@ -16,7 +16,7 @@ async function call(path,{method='GET',token,cookie,body}={}) {
 }
 
 const health = await call('/health')
-assert.equal(health.payload.data.version,'1.3.0')
+assert.equal(health.payload.data.version,'1.4.0')
 assert.equal(health.payload.data.ready,true)
 
 const productionHealth = await onRequest({
@@ -182,6 +182,54 @@ assert.equal(results.status,200)
 assert.equal(results.payload.data.items.length,3)
 assert.ok(results.payload.data.items.every((x) => x.teamName === '研发团队'))
 
+const customRules = [
+  {id:'quality',name:'交付质量',min:60,max:99,weight:100,operation:'add',enabled:true},
+  {id:'bonus',name:'额外贡献',min:0,max:20,weight:10,operation:'add',enabled:true},
+  {id:'penalty',name:'风险扣减',min:0,max:20,weight:10,operation:'subtract',enabled:true}
+]
+const customActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{
+    name:'自定义维度测试活动',teamId:'team_rd',participantMode:'quantity',participantCount:1,
+    targetMode:'selected',targetEmployeeIds:['emp_003'],excludeSelf:true,periodMode:'new',periodName:'自定义维度测试周期',
+    startTime:start,endTime:end,rules:customRules,rounding:'one_decimal'
+  }
+})
+assert.equal(customActivity.status,200)
+assert.equal(customActivity.payload.data.period.name,'自定义维度测试周期')
+assert.ok(customActivity.payload.data.activity.periodId)
+const invalidCustomRules = await call('/admin/settings/score-rules',{
+  method:'PUT',cookie:adminCookie,
+  body:{evaluationCodeId:customActivity.payload.data.activity.id,rules:[...customRules.slice(0,2)],rounding:'one_decimal'}
+})
+assert.equal(invalidCustomRules.status,400)
+const customEntry = await call('/public/verify-entry',{
+  method:'POST',body:{evaluationCode:customActivity.payload.data.activity.linkCode,verifyCode:customActivity.payload.data.verifyCodes[0].code}
+})
+assert.equal(customEntry.status,200)
+const customTask = await call('/public/current-task',{token:customEntry.payload.token})
+assert.deepEqual(customTask.payload.data.rules.map((rule) => rule.operation),['add','add','subtract'])
+const customSubmit = await call('/public/submit-score',{
+  method:'POST',token:customEntry.payload.token,
+  body:{taskId:customTask.payload.data.id,scores:{quality:90,bonus:10,penalty:5}}
+})
+assert.equal(customSubmit.status,200)
+assert.equal(customSubmit.payload.data.total,90.5)
+const customResults = await call(`/admin/results?evaluationCodeId=${customActivity.payload.data.activity.id}`,{cookie:adminCookie})
+assert.deepEqual(customResults.payload.data.rules.map((rule) => rule.id),['quality','bonus','penalty'])
+assert.equal(customResults.payload.data.items.find((item) => item.id === 'emp_003').values.penalty,5)
+
+const existingPeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{
+    name:'已有周期测试活动',teamId:'team_rd',participantMode:'quantity',participantCount:1,
+    targetMode:'selected',targetEmployeeIds:['emp_004'],excludeSelf:true,periodMode:'existing',periodId:customActivity.payload.data.period.id,
+    startTime:start,endTime:end
+  }
+})
+assert.equal(existingPeriodActivity.status,200)
+assert.equal(existingPeriodActivity.payload.data.activity.periodId,customActivity.payload.data.period.id)
+
 const timed = await call('/admin/timed-invites/generate',{
   method:'POST',cookie:adminCookie,
   body:{evaluationCodeId:created.payload.data.activity.id}
@@ -268,4 +316,4 @@ const logout = await call('/admin/logout',{method:'POST',cookie:adminCookie})
 assert.equal(logout.status,200)
 assert.ok(logout.cookie.startsWith('lumirror_admin='))
 
-console.log('API smoke test passed: cookie auth, RBAC, team filtering, selectable participants/targets, short links, 6-digit invites, configured session duration, timed links, self-exclusion, strict validation, results, batch ops, exports, deployment check, cleanup, logs and import validation')
+console.log('API smoke test passed: auth/RBAC, periods, custom add/subtract score rules, dynamic results, invitations, strict validation, batch ops, exports, maintenance and import validation')

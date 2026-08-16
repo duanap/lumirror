@@ -23,6 +23,7 @@ const selectedRows = ref<any[]>([])
 const form = reactive<any>({
   name:'',teamId:'',participantMode:'selected',participantEmployeeIds:[],participantCount:5,
   targetMode:'all',targetEmployeeIds:[],excludeSelf:true,periodId:'',periodName:'',
+  periodMode:'new',
   startTime:new Date(),endTime:new Date(Date.now()+30*24*60*60*1000),rounding:'one_decimal'
 })
 
@@ -31,8 +32,11 @@ const teamEmployees = computed(() => employees.value.filter((x) => x.teamId === 
 const participantCount = computed(() => form.participantMode === 'selected' ? form.participantEmployeeIds.length : Number(form.participantCount || 0))
 const targetCount = computed(() => form.targetMode === 'selected' ? form.targetEmployeeIds.length : teamEmployees.value.length)
 const selectedCount = computed(() => selectedRows.value.length)
+const selectedPeriod = computed(() => periods.value.find((period) => period.id === form.periodId))
+const periodLabel = computed(() => form.periodMode === 'existing' ? selectedPeriod.value?.name || '未选择' : form.periodName || `${form.name || '新评价活动'}周期`)
 const activityColumns = [
   { key:'link', label:'邀请链接' },
+  { key:'period', label:'评价周期' },
   { key:'team', label:'评价团队' },
   { key:'participants', label:'邀请码数' },
   { key:'targets', label:'评价对象' },
@@ -40,7 +44,7 @@ const activityColumns = [
   { key:'completion', label:'完成率' },
   { key:'status', label:'状态' }
 ]
-const columns = useColumnSettings('lumirror.admin.activities.columns', activityColumns)
+const columns = useColumnSettings('lumirror.admin.activities.columns.v2', activityColumns)
 const visibleColumns = columns.selected
 const selectableColumns = columns.selectable
 const estimatedTaskCount = computed(() => {
@@ -72,6 +76,7 @@ function openCreate() {
   Object.assign(form,{
     name:'',teamId:firstTeam,participantMode:'selected',participantEmployeeIds:[],participantCount:5,
     targetMode:'all',targetEmployeeIds:[],excludeSelf:true,periodId:'',periodName:'',
+    periodMode:'new',
     startTime:new Date(),endTime:new Date(Date.now()+30*24*60*60*1000),rounding:'one_decimal'
   })
   result.value = null
@@ -86,7 +91,10 @@ function next() {
   if (form.participantMode === 'selected' && !form.participantEmployeeIds.length) return ElMessage.warning('请选择至少 1 名参与评价成员')
   if (form.participantMode === 'quantity' && (!Number.isInteger(form.participantCount) || form.participantCount < 1 || form.participantCount > 200)) return ElMessage.warning('邀请码数量必须为 1-200 的整数')
   if (form.targetMode === 'selected' && !form.targetEmployeeIds.length) return ElMessage.warning('请选择至少 1 名评价对象')
+  if (form.periodMode === 'existing' && !selectedPeriod.value) return ElMessage.warning('请选择评价周期')
+  if (form.periodMode === 'new' && !form.periodName.trim()) return ElMessage.warning('请输入新评价周期名称')
   if (!form.startTime || !form.endTime || new Date(form.startTime) >= new Date(form.endTime)) return ElMessage.warning('请设置正确的开始和结束时间')
+  if (form.periodMode === 'existing' && selectedPeriod.value && (new Date(form.startTime) < new Date(selectedPeriod.value.startTime) || new Date(form.endTime) > new Date(selectedPeriod.value.endTime))) return ElMessage.warning('评价活动时间必须处于所选周期时间范围内')
   if (estimatedTaskCount.value <= 0) return ElMessage.warning('当前设置不会生成任何评价任务，请调整参与成员或评价对象')
   step.value = 1
 }
@@ -94,7 +102,7 @@ async function createFlow() {
   creating.value = true
   try {
     result.value = unwrap<any>(await api.post('/admin/evaluation-activities/create-flow',{
-      ...form,startTime:new Date(form.startTime).toISOString(),endTime:new Date(form.endTime).toISOString()
+      ...form,periodId:form.periodMode === 'existing' ? form.periodId : '',startTime:new Date(form.startTime).toISOString(),endTime:new Date(form.endTime).toISOString()
     }))
     step.value = 2
     await load()
@@ -197,6 +205,7 @@ onMounted(load)
         <el-table-column type="selection" width="46"/>
         <el-table-column prop="name" label="评价活动" min-width="210"/>
         <el-table-column v-if="columns.visible('link')" label="邀请链接" min-width="220"><template #default="{row}"><span class="link-text">{{ inviteLink(row.linkCode) }}</span></template></el-table-column>
+        <el-table-column v-if="columns.visible('period')" prop="periodName" label="评价周期" min-width="150"/>
         <el-table-column v-if="columns.visible('team')" prop="teamName" label="评价团队" min-width="120"/>
         <el-table-column v-if="columns.visible('participants')" prop="participantCount" label="邀请码数" width="95"/>
         <el-table-column v-if="columns.visible('targets')" prop="targetCount" label="评价对象" width="95"/>
@@ -228,7 +237,9 @@ onMounted(load)
               <el-select v-model="form.targetEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择评价对象"><el-option v-for="item in teamEmployees" :key="item.id" :label="`${item.name} · ${item.position}`" :value="item.id"/></el-select>
             </el-form-item>
             <el-form-item label="排除自评"><el-switch v-model="form.excludeSelf"/><small>按成员名单生成时，自动移除评价本人任务</small></el-form-item>
-            <el-form-item label="关联已有周期（可选）"><el-select v-model="form.periodId" clearable style="width:100%"><el-option v-for="period in periods" :key="period.id" :label="period.name" :value="period.id"/></el-select></el-form-item>
+            <el-form-item label="评价周期" class="full"><el-radio-group v-model="form.periodMode"><el-radio-button value="new">同步新建周期</el-radio-button><el-radio-button value="existing">选择已有周期</el-radio-button></el-radio-group></el-form-item>
+            <el-form-item v-if="form.periodMode==='new'" label="新周期名称" class="full"><el-input v-model="form.periodName" placeholder="例如：2026年第四季度" maxlength="40"/><small>新周期与本次评价活动使用相同的开始和结束时间</small></el-form-item>
+            <el-form-item v-else label="选择评价周期" class="full"><el-select v-model="form.periodId" style="width:100%" placeholder="请选择已有评价周期"><el-option v-for="period in periods" :key="period.id" :label="`${period.name} · ${period.startTime} 至 ${period.endTime}`" :value="period.id"/></el-select><small>评价活动的开始和结束时间必须处于所选周期内</small></el-form-item>
             <el-form-item label="开始时间"><el-date-picker v-model="form.startTime" type="datetime" style="width:100%"/></el-form-item>
             <el-form-item label="结束时间"><el-date-picker v-model="form.endTime" type="datetime" style="width:100%"/></el-form-item>
           </div>
@@ -239,6 +250,7 @@ onMounted(load)
         <h3>即将自动生成以下内容</h3>
         <div class="summary-grid">
           <div><span>评价活动</span><b>{{form.name}}</b></div>
+          <div><span>评价周期</span><b>{{periodLabel}}</b></div>
           <div><span>评价团队</span><b>{{selectedTeam?.name}}</b></div>
           <div><span>邀请链接</span><b>自动生成短链</b></div>
           <div><span>邀请码</span><b>{{participantCount}} 个 6 位数字</b></div>
@@ -272,6 +284,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.flow-tip{margin:20px 0 12px}.field-toolbar{justify-content:flex-end;margin:0 0 16px}.batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px}.batch-bar span{margin-right:auto;color:var(--muted)}.batch-bar b{color:var(--brand)}.link-text{display:inline-block;max-width:100%;overflow:hidden;color:var(--brand);font-weight:650;text-overflow:ellipsis;white-space:nowrap}.code{color:var(--brand);letter-spacing:.08em}.steps{margin:6px 0 26px}.step-body{min-height:330px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.full{grid-column:1/-1}.form-grid small{display:block;margin-top:6px;color:var(--muted)}.select-head{display:flex;align-items:center;justify-content:space-between;width:100%}.confirm-card h3{margin:0 0 18px}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px}.summary-grid div,.result-summary div{display:grid;gap:7px;padding:15px;border:1px solid var(--line);border-radius:10px;background:#fffaf6}.summary-grid span,.result-summary span{color:var(--muted);font-size:13px}.result-card :deep(.el-result){padding:4px 0 18px}.result-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.result-summary div{position:relative}.result-summary b{word-break:break-all}.result-summary .el-button{position:absolute;right:8px;bottom:7px}.codes-box{margin-top:18px;padding:16px;border-radius:12px;background:#fff7f2}.codes-head{display:flex;align-items:center;justify-content:space-between}.codes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;max-height:240px;overflow:auto}.codes code{display:flex;align-items:center;gap:8px;padding:9px;border:1px solid #ffd5bd;border-radius:8px;background:#fff;color:var(--brand);font-weight:700}.codes span{display:grid}.codes small{color:var(--muted);font-weight:500}
+.flow-tip{margin:20px 0 12px}.field-toolbar{justify-content:flex-end;margin:0 0 16px}.batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px}.batch-bar span{margin-right:auto;color:var(--muted)}.batch-bar b{color:var(--brand)}.link-text{display:inline-block;max-width:100%;overflow:hidden;color:var(--brand);font-weight:650;text-overflow:ellipsis;white-space:nowrap}.code{color:var(--brand);letter-spacing:.08em}.steps{margin:6px 0 26px}.step-body{min-height:330px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.full{grid-column:1/-1}.form-grid small{display:block;margin-top:6px;color:var(--muted)}.select-head{display:flex;align-items:center;justify-content:space-between;width:100%}.confirm-card h3{margin:0 0 18px}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px}.summary-grid div,.result-summary div{display:grid;gap:7px;padding:15px;border:1px solid var(--line);border-radius:10px;background:var(--surface-warm)}.summary-grid span,.result-summary span{color:var(--muted);font-size:13px}.result-card :deep(.el-result){padding:4px 0 18px}.result-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.result-summary div{position:relative}.result-summary b{word-break:break-all}.result-summary .el-button{position:absolute;right:8px;bottom:7px}.codes-box{margin-top:18px;padding:16px;border-radius:12px;background:var(--surface-tint)}.codes-head{display:flex;align-items:center;justify-content:space-between}.codes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;max-height:240px;overflow:auto}.codes code{display:flex;align-items:center;gap:8px;padding:9px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--brand);font-weight:700}.codes span{display:grid}.codes small{color:var(--muted);font-weight:500}
 @media(max-width:700px){.form-grid,.summary-grid,.result-summary{grid-template-columns:1fr}.full{grid-column:auto}.codes{grid-template-columns:1fr}.step-body{min-height:280px}}
 </style>

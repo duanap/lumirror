@@ -5,6 +5,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { DatabaseSync } from 'node:sqlite'
+import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 
 const projectRoot = path.resolve(import.meta.dirname, '..')
 const dataDir = await mkdtemp(path.join(tmpdir(), 'lumirror-server-'))
@@ -87,6 +88,19 @@ async function call(baseUrl, route, { method = 'GET', token, cookie, body } = {}
 
 let running
 try {
+  const schemaOneFile = path.join(dataDir, 'schema-one.sqlite')
+  const schemaOne = new DatabaseSync(schemaOneFile)
+  schemaOne.exec(`
+    CREATE TABLE app_state (singleton INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, domain_version INTEGER NOT NULL, created_at TEXT, updated_at TEXT, extra_json TEXT NOT NULL);
+    INSERT INTO app_state VALUES (1, 1, 3, NULL, NULL, '{}');
+    CREATE TABLE evaluation_rules (evaluation_id TEXT NOT NULL, rule_id TEXT NOT NULL, name TEXT NOT NULL, min_value REAL NOT NULL, max_value REAL NOT NULL, weight REAL NOT NULL, enabled INTEGER NOT NULL, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL, PRIMARY KEY (evaluation_id, rule_id));
+  `)
+  schemaOne.close()
+  const migratedStorage = new RelationalSqliteStorage(schemaOneFile)
+  assert.ok(migratedStorage.database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'))
+  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 2)
+  migratedStorage.close()
+
   await writeFile(path.join(dataDir, 'employee-review-db.json'), '{"legacy":true}', { mode: 0o600 })
   running = await startServer({ includeBootstrapPassword: true })
   const health = await call(running.baseUrl, '/health')
@@ -177,6 +191,8 @@ try {
   for (const table of ['users', 'departments', 'teams', 'employees', 'review_periods', 'evaluation_activities', 'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'verification_codes', 'evaluation_tasks', 'scores', 'score_values', 'timed_invites', 'audit_logs', 'settings']) {
     assert.ok(tables.includes(table), `missing relational business table: ${table}`)
   }
+  assert.ok(database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'), 'evaluation_rules.operation must be queryable')
+  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 2)
   assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
   database.close()
@@ -189,7 +205,7 @@ try {
   })
   assert.equal(persistedLogin.status, 200)
 
-  console.log('Production relational SQLite smoke test passed: business tables, bootstrap, restart persistence, atomic writes, and concurrent scoring')
+  console.log('Production relational SQLite smoke test passed: schema-v1 upgrade, rule operation column, bootstrap, restart persistence, atomic writes and concurrent scoring')
 } finally {
   if (running?.child) await stopServer(running.child)
   await rm(dataDir, { recursive: true, force: true })
