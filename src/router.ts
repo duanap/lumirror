@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import Home from './views/public/Home.vue'
 import PublicEntry from './views/public/PublicEntry.vue'
 import Evaluate from './views/public/Evaluate.vue'
 import Success from './views/public/Success.vue'
@@ -20,7 +21,7 @@ const Settings = () => import('./views/admin/Settings.vue')
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', component: PublicEntry },
+    { path: '/', component: Home },
     { path: '/i/:linkCode', component: PublicEntry },
     { path: '/t/:timedLinkCode', component: PublicEntry },
     { path: '/evaluate', component: Evaluate },
