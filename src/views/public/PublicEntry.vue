@@ -11,15 +11,33 @@ const route = useRoute()
 const form = reactive({ evaluationCode: '', verifyCode: '' })
 const loading = ref(false)
 const openedTimedCode = ref('')
+const evaluationName = ref('')
+const loadedEvaluationCode = ref('')
 const linkCode = computed(() => String(route.params.linkCode || '').trim())
 const timedLinkCode = computed(() => String(route.params.timedLinkCode || '').trim())
 const hasInviteLink = computed(() => /^\d{8}$/.test(linkCode.value))
 const hasTimedLink = computed(() => /^\d{8}$/.test(timedLinkCode.value))
 
 watchEffect(() => {
-  if (hasInviteLink.value) form.evaluationCode = linkCode.value
+  if (hasInviteLink.value) {
+    form.evaluationCode = linkCode.value
+    void loadEvaluationTitle()
+  }
   if (hasTimedLink.value && openedTimedCode.value !== timedLinkCode.value) void enterTimed()
 })
+
+async function loadEvaluationTitle() {
+  const code = linkCode.value
+  if (!hasInviteLink.value || loadedEvaluationCode.value === code) return
+  loadedEvaluationCode.value = code
+  evaluationName.value = ''
+  try {
+    const result = await api.post<{ name: string }>('/public/evaluation-title',{ linkCode:code })
+    if (linkCode.value === code) evaluationName.value = result.data?.name || ''
+  } catch {
+    // 无效、未开始或已结束的活动沿用通用标题，进入时再展示具体校验结果。
+  }
+}
 
 function storeSession(result:any) {
   if (result.token) sessionStorage.setItem('public_token', result.token)
@@ -58,7 +76,7 @@ async function enterTimed() {
     <div class="entry-card">
       <div class="entry-icon"><el-icon :size="30"><Lock /></el-icon></div>
       <span class="eyebrow">匿名评价入口</span>
-      <h2>{{ hasTimedLink ? '正在打开时效评价' : '进入团队评价' }}</h2>
+      <h2>{{ hasTimedLink ? '正在打开时效评价' : (evaluationName || '进入团队评价') }}</h2>
       <p v-if="hasTimedLink">链接打开后开始 5 分钟倒计时，请在倒计时内完成全部评价。</p>
       <p v-else-if="!hasInviteLink">评价活动只能通过邀请链接加邀请码，或一次性的时效链接打开。</p>
 

@@ -1007,6 +1007,13 @@ function performBatchMutation(db, session, currentUser, input) {
 }
 
 async function publicRoutes(context,path,method,db) {
+  if (path === '/public/evaluation-title' && method === 'POST') {
+    const input = await bodyJson(context.request)
+    const linkCode = normalize(input.linkCode).toUpperCase()
+    const evaluation = db.evaluationCodes.find((x) => String(x.linkCode || '').toUpperCase() === linkCode)
+    if (!evaluation || activityStatus(evaluation) !== 'active') return fail('评价不存在或已结束',404,'NOT_FOUND')
+    return json({success:true,data:{name:evaluation.name}})
+  }
   if (path === '/public/verify-entry' && method === 'POST') {
     const input = await bodyJson(context.request)
     const code = normalize(input.evaluationCode).toUpperCase()
@@ -1775,7 +1782,7 @@ export default async function onRequest(context) {
   const csrfDenied = requireAdminRequestHeader(context.request,path,method)
   if (csrfDenied) return withCors(csrfDenied, context)
   if (path === '/admin/login' && method === 'POST' && rateLimited(context.request,'admin-login',20,5 * 60 * 1000)) return withCors(fail('登录尝试过于频繁，请稍后再试',429,'RATE_LIMITED'), context)
-  if ((path === '/public/verify-entry' || path === '/public/timed-entry') && method === 'POST' && rateLimited(context.request,'public-entry',40,5 * 60 * 1000)) return withCors(fail('操作过于频繁，请稍后再试',429,'RATE_LIMITED'), context)
+  if ((path === '/public/evaluation-title' || path === '/public/verify-entry' || path === '/public/timed-entry') && method === 'POST' && rateLimited(context.request,'public-entry',40,5 * 60 * 1000)) return withCors(fail('操作过于频繁，请稍后再试',429,'RATE_LIMITED'), context)
   if (path === '/health' && method === 'GET') {
     const appEnv = getEnv(context,'APP_ENV','development')
     const production = appEnv === 'production'

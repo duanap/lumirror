@@ -145,6 +145,11 @@ assert.equal(created.payload.data.taskCount,4)
 const evaluationCode = created.payload.data.activity.linkCode
 const verifyCode = created.payload.data.verifyCodes[0].code
 const wrongVerifyCode = verifyCode === '000000' ? '000001' : '000000'
+const evaluationTitle = await call('/public/evaluation-title',{method:'POST',body:{linkCode:evaluationCode}})
+assert.equal(evaluationTitle.status,200)
+assert.equal(evaluationTitle.payload.data.name,'v1.2流程测试活动')
+const missingEvaluationTitle = await call('/public/evaluation-title',{method:'POST',body:{linkCode:'00000000'}})
+assert.equal(missingEvaluationTitle.status,404)
 const legacyActivityCode = await call('/public/verify-entry',{method:'POST',body:{evaluationCode:created.payload.data.activity.code,verifyCode}})
 assert.equal(legacyActivityCode.status,404)
 const wrongPair = await call('/public/verify-entry',{method:'POST',body:{evaluationCode,verifyCode:wrongVerifyCode}})
