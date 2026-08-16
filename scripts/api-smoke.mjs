@@ -64,6 +64,18 @@ const employeeList = await call('/admin/employees?teamId=team_rd&status=active',
 assert.equal(employeeList.status,200)
 assert.ok(employeeList.payload.data.items.length >= 5)
 assert.ok(employeeList.payload.data.items.every((x) => x.teamId === 'team_rd'))
+const avatarUpdate = await call('/admin/employees/emp_003',{
+  method:'PUT',cookie:adminCookie,
+  body:{name:'王敏',gender:'female',departmentId:'dep_rd',teamId:'team_rd',position:'产品经理',status:'active',avatar:'avatar_female_young_plain'}
+})
+assert.equal(avatarUpdate.status,200)
+assert.equal(avatarUpdate.payload.data.avatar,'avatar_female_young_plain')
+const mismatchedAvatarUpdate = await call('/admin/employees/emp_001',{
+  method:'PUT',cookie:adminCookie,
+  body:{name:'张三',gender:'male',departmentId:'dep_rd',teamId:'team_rd',position:'研发工程师',status:'active',avatar:'avatar_female_young_plain'}
+})
+assert.equal(mismatchedAvatarUpdate.status,200)
+assert.equal(mismatchedAvatarUpdate.payload.data.avatar,'')
 
 const createdUser = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
@@ -209,6 +221,7 @@ const customEntry = await call('/public/verify-entry',{
 assert.equal(customEntry.status,200)
 const customTask = await call('/public/current-task',{token:customEntry.payload.token})
 assert.deepEqual(customTask.payload.data.rules.map((rule) => rule.operation),['add','add','subtract'])
+assert.equal(customTask.payload.data.target.avatar,'avatar_female_young_plain')
 const customSubmit = await call('/public/submit-score',{
   method:'POST',token:customEntry.payload.token,
   body:{taskId:customTask.payload.data.id,scores:{quality:90,bonus:10,penalty:5}}

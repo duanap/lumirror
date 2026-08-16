@@ -17,6 +17,12 @@ const DEFAULT_RULES = [
   { id: 'collaboration', name: '协作能力', min: 60, max: 99, weight: 100, operation: 'add', enabled: true }
 ]
 const DEFAULT_ROUNDING = 'one_decimal'
+const AVATAR_PRESET_GENDERS = {
+  avatar_male_young_plain:'male', avatar_male_young_glasses:'male',
+  avatar_male_adult_plain:'male', avatar_male_adult_glasses:'male',
+  avatar_female_young_plain:'female', avatar_female_young_glasses:'female',
+  avatar_female_adult_plain:'female', avatar_female_adult_glasses:'female'
+}
 
 const ROLE_LABELS = {
   admin: '管理员',
@@ -38,6 +44,10 @@ const ROLE_PERMISSIONS = {
 
 function copyJson(value) { return JSON.parse(JSON.stringify(value)) }
 function normalize(value) { return String(value || '').trim() }
+function normalizeEmployeeAvatar(value, gender) {
+  const avatar = normalize(value)
+  return AVATAR_PRESET_GENDERS[avatar] === gender ? avatar : ''
+}
 function nowText() { return new Date().toISOString() }
 function randomId(prefix = 'id') {
   const bytes = new Uint8Array(8)
@@ -1341,6 +1351,8 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    input.gender = ['male','female','unknown'].includes(input.gender) ? input.gender : current.gender
+    input.avatar = normalizeEmployeeAvatar(input.avatar,input.gender)
     db.employees[index] = {...current,...input,id:current.id,updatedAt:nowText()}
     delete db.employees[index].employeeNo
     delete db.employees[index].phone
@@ -1362,8 +1374,9 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    const gender = ['male','female','unknown'].includes(input.gender) ? input.gender : 'unknown'
     const employee = {
-      ...input,id:randomId('emp'),gender:['male','female','unknown'].includes(input.gender)?input.gender:'unknown',
+      ...input,id:randomId('emp'),gender,avatar:normalizeEmployeeAvatar(input.avatar,gender),
       status:input.status === 'inactive' ? 'inactive' : 'active',createdAt:nowText(),updatedAt:nowText()
     }
     db.employees.push(employee)
