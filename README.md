@@ -43,6 +43,8 @@ npm run build
 
 See [EDGEONE_DEPLOYMENT.md](./EDGEONE_DEPLOYMENT.md). In production, bind KV with the exact name `EVALUATION_KV` and configure the Functions environment variables. Then verify `https://your-domain/api/health` reports `ready: true`.
 
+The current whole-database KV model has a confirmed concurrent-write loss scenario. See [CONCURRENCY_MIGRATION.md](./CONCURRENCY_MIGRATION.md) for the deterministic reproduction, target consistency contract, and safe migration sequence.
+
 ## Packaging
 
 EdgeOne upload archives use the format `Lumirror-v<version>.zip`. Include only source and deployment configuration: `src`, `public`, `edge-functions`, `index.html`, `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, and `edgeone.json`.
