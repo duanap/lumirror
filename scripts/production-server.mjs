@@ -1,40 +1,46 @@
 import http from 'node:http'
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir } from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import onRequest from '../edge-functions/api/[[default]].js'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 const DATABASE_KEY = 'employee_review_db_v1'
 
-class FileKV {
-  constructor(dataFile) {
-    this.dataFile = dataFile
+class SqliteKV {
+  constructor(databaseFile) {
+    this.database = new DatabaseSync(databaseFile)
+    this.database.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = FULL;
+      CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `)
+    this.readStatement = this.database.prepare('SELECT value FROM kv_store WHERE key = ?')
+    this.writeStatement = this.database.prepare(`
+      INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `)
   }
 
   async get(key, options = {}) {
     if (key !== DATABASE_KEY) return null
-    let value
-    try {
-      value = await readFile(this.dataFile, 'utf8')
-    } catch (error) {
-      if (error?.code === 'ENOENT') return null
-      throw error
-    }
+    const value = this.readStatement.get(key)?.value ?? null
+    if (value === null) return null
     return options.type === 'json' ? JSON.parse(value) : value
   }
 
   async put(key, value) {
     if (key !== DATABASE_KEY) throw new Error(`Unsupported storage key: ${key}`)
-    const temporaryFile = `${this.dataFile}.${process.pid}.${randomUUID()}.tmp`
-    try {
-      await writeFile(temporaryFile, String(value), { encoding: 'utf8', mode: 0o600, flag: 'wx' })
-      await rename(temporaryFile, this.dataFile)
-      await chmod(this.dataFile, 0o600)
-    } catch (error) {
-      await rm(temporaryFile, { force: true }).catch(() => {})
-      throw error
-    }
+    this.writeStatement.run(key, String(value), new Date().toISOString())
+  }
+
+  close() {
+    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    this.database.close()
   }
 }
 
@@ -86,9 +92,12 @@ const port = Number(process.env.PORT || 3020)
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port')
 
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'))
-const dataFile = path.join(dataDir, 'employee-review-db.json')
+const databaseFile = path.join(dataDir, 'lumirror.sqlite')
+process.umask(0o077)
 await mkdir(dataDir, { recursive: true, mode: 0o700 })
 await chmod(dataDir, 0o700)
+const storage = new SqliteKV(databaseFile)
+await chmod(databaseFile, 0o600)
 
 const env = {
   APP_ENV: appEnv,
@@ -99,7 +108,7 @@ const env = {
   SESSION_COOKIE_SECURE: process.env.SESSION_COOKIE_SECURE || 'true',
   ADMIN_SESSION_SECONDS: process.env.ADMIN_SESSION_SECONDS || '',
   PUBLIC_SESSION_SECONDS: process.env.PUBLIC_SESSION_SECONDS || '',
-  EVALUATION_KV: new FileKV(dataFile)
+  EVALUATION_KV: storage
 }
 
 let requestQueue = Promise.resolve()
@@ -146,6 +155,7 @@ async function shutdown(signal) {
   console.log(`Lumirror API received ${signal}; shutting down`)
   server.close(async () => {
     await requestQueue
+    storage.close()
     process.exit(0)
   })
   setTimeout(() => process.exit(1), 10_000).unref()

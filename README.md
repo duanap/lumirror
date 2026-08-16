@@ -16,7 +16,7 @@
 - Vue 3 + TypeScript + Vite
 - Element Plus
 - Edge-compatible API handler: `edge-functions/api/[[default]].js`
-- Direct-server adapter: Node.js, file-backed storage, PM2 and Nginx
+- Direct-server adapter: Node.js, SQLite storage, PM2 and Nginx
 
 ## Local Development
 

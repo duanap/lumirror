@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -86,6 +86,7 @@ async function call(baseUrl, route, { method = 'GET', token, cookie, body } = {}
 
 let running
 try {
+  await writeFile(path.join(dataDir, 'employee-review-db.json'), '{"legacy":true}', { mode: 0o600 })
   running = await startServer({ includeBootstrapPassword: true })
   const health = await call(running.baseUrl, '/health')
   assert.equal(health.status, 200)
@@ -98,6 +99,9 @@ try {
   })
   assert.equal(login.status, 200)
   const adminCookie = login.cookie
+
+  const sqliteHeader = await readFile(path.join(dataDir, 'lumirror.sqlite'))
+  assert.equal(sqliteHeader.subarray(0, 16).toString('utf8'), 'SQLite format 3\u0000')
 
   const passwordChange = await call(running.baseUrl, '/admin/change-password', {
     method: 'POST',
@@ -159,7 +163,7 @@ try {
   })
   assert.equal(persistedLogin.status, 200)
 
-  console.log('Production server smoke test passed: bootstrap, persistence across restart, and concurrent scoring')
+  console.log('Production SQLite smoke test passed: legacy JSON ignored, bootstrap, persistence across restart, and concurrent scoring')
 } finally {
   if (running?.child) await stopServer(running.child)
   await rm(dataDir, { recursive: true, force: true })

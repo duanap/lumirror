@@ -13,11 +13,11 @@ This deployment does not use EdgeOne. Nginx serves `dist`, proxies `/api/` to a 
 │   ├── scripts/production-server.mjs
 │   └── deploy/ecosystem.config.cjs
 └── shared/
-    ├── data/employee-review-db.json
+    ├── data/lumirror.sqlite
     └── lumirror.env
 ```
 
-`shared/lumirror.env` and `shared/data` must be readable only by the service owner. The environment file contains:
+`shared/lumirror.env` and `shared/data` must be readable only by the service owner. The SQLite database uses WAL mode and is written by one PM2 process. The environment file contains:
 
 ```dotenv
 APP_ENV=production
@@ -30,6 +30,8 @@ INITIAL_ADMIN_PASSWORD=<one-time bootstrap password>
 ALLOWED_ORIGINS=https://lumirror.duanap.cn
 SESSION_COOKIE_SECURE=true
 ```
+
+The direct SQLite release does not import `employee-review-db.json`. If that legacy JSON file exists, it is left untouched and ignored; the first SQLite startup creates a new database from the configured bootstrap credentials.
 
 After the first successful admin login and password change, remove `INITIAL_ADMIN_PASSWORD` from the environment file and restart the PM2 process. Existing data does not depend on this value.
 
@@ -55,4 +57,4 @@ The expected response has HTTP 200 and `data.ready: true`. Then replace the Edge
 
 ## Rollback
 
-Repoint `current` to the previous release, reload `lumirror` in PM2, run `nginx -t`, and reload Nginx. The database remains in `shared/data` and is not changed by a code rollback; take a separate data snapshot before any data-format migration.
+Repoint `current` to the previous release, reload `lumirror` in PM2, run `nginx -t`, and reload Nginx. The SQLite database remains in `shared/data` and is not changed by a code rollback; take a separate database snapshot before any schema migration.
