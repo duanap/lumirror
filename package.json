@@ -8,7 +8,9 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "dev:api": "node scripts/local-api.mjs",
+    "start": "node scripts/production-server.mjs",
     "test:api": "node scripts/api-smoke.mjs",
+    "test:server": "node scripts/server-smoke.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",
     "check:functions": "node --check \"edge-functions/api/[[default]].js\""
   },

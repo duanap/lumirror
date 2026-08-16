@@ -15,8 +15,8 @@
 
 - Vue 3 + TypeScript + Vite
 - Element Plus
-- EdgeOne Functions: `edge-functions/api/[[default]].js`
-- EdgeOne KV: `EVALUATION_KV`
+- Edge-compatible API handler: `edge-functions/api/[[default]].js`
+- Direct-server adapter: Node.js, file-backed storage, PM2 and Nginx
 
 ## Local Development
 
@@ -36,12 +36,13 @@ Local development starts with `admin` / `admin123`; the first login requires a p
 ```bash
 npm run check:functions
 npm run test:api
+npm run test:server
 npm run build
 ```
 
 ## Deployment
 
-See [EDGEONE_DEPLOYMENT.md](./EDGEONE_DEPLOYMENT.md). In production, bind KV with the exact name `EVALUATION_KV` and configure the Functions environment variables. Then verify `https://your-domain/api/health` reports `ready: true`.
+The active production target is a direct server deployment; see [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md). The older EdgeOne instructions remain in [EDGEONE_DEPLOYMENT.md](./EDGEONE_DEPLOYMENT.md) for reference only.
 
 The current whole-database KV model has a confirmed concurrent-write loss scenario. See [CONCURRENCY_MIGRATION.md](./CONCURRENCY_MIGRATION.md) for the deterministic reproduction, target consistency contract, and safe migration sequence.
 
