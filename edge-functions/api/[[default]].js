@@ -798,6 +798,13 @@ function sanitizeSettings(input, current = {}) {
   return next
 }
 
+function publicSessionSeconds(context, db) {
+  const minutes = Number(db.settings?.publicSessionMinutes)
+  if (Number.isInteger(minutes) && minutes >= 5 && minutes <= 240) return minutes * 60
+  const fallback = Number(getEnv(context,'PUBLIC_SESSION_SECONDS','7200'))
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 7200
+}
+
 function isPlainObject(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)) }
 function assertImportArray(data, key, max) {
   if (!Array.isArray(data[key])) throw httpError(`导入数据缺少 ${key} 数组`)
@@ -992,7 +999,7 @@ async function publicRoutes(context,path,method,db) {
     await saveDatabase(context,db)
     const token = await signToken({
       role:'evaluator', evaluationCodeId:evaluation.id, verifyCodeId:verify.id, evaluatorHash:verify.evaluatorHash
-    }, evaluatorSecret(context), Number(getEnv(context,'PUBLIC_SESSION_SECONDS','7200')))
+    }, evaluatorSecret(context), publicSessionSeconds(context,db))
     return json({
       success:true, token,
       evaluation:{id:evaluation.id,name:evaluation.name,teamName:db.teams.find((x) => x.id === evaluation.teamId)?.name || ''},

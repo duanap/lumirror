@@ -53,6 +53,13 @@ const adminPasswordChange = await call('/admin/change-password',{
 })
 assert.equal(adminPasswordChange.status,200)
 
+const publicSessionSettings = await call('/admin/settings',{
+  method:'PUT',cookie:adminCookie,
+  body:{publicSessionMinutes:15}
+})
+assert.equal(publicSessionSettings.status,200)
+assert.equal(publicSessionSettings.payload.data.publicSessionMinutes,15)
+
 const employeeList = await call('/admin/employees?teamId=team_rd&status=active',{cookie:adminCookie})
 assert.equal(employeeList.status,200)
 assert.ok(employeeList.payload.data.items.length >= 5)
@@ -131,9 +138,14 @@ assert.equal(legacyActivityCode.status,404)
 const wrongPair = await call('/public/verify-entry',{method:'POST',body:{evaluationCode,verifyCode:wrongVerifyCode}})
 assert.equal(wrongPair.status,403)
 
+const entryRequestedAt = Math.floor(Date.now() / 1000)
 const entry = await call('/public/verify-entry',{method:'POST',body:{evaluationCode,verifyCode}})
+const entryReturnedAt = Math.floor(Date.now() / 1000)
 assert.equal(entry.status,200)
 assert.equal(entry.payload.remaining,2)
+const entryTokenPayload = JSON.parse(Buffer.from(entry.payload.token.split('.')[0],'base64url').toString('utf8'))
+assert.ok(entryTokenPayload.exp >= entryRequestedAt + 900)
+assert.ok(entryTokenPayload.exp <= entryReturnedAt + 900)
 
 const firstTask = await call('/public/current-task',{token:entry.payload.token})
 assert.equal(firstTask.status,200)
@@ -256,4 +268,4 @@ const logout = await call('/admin/logout',{method:'POST',cookie:adminCookie})
 assert.equal(logout.status,200)
 assert.ok(logout.cookie.startsWith('lumirror_admin='))
 
-console.log('API smoke test passed: cookie auth, RBAC, team filtering, selectable participants/targets, short links, 6-digit invites, timed links, self-exclusion, strict validation, results, batch ops, exports, deployment check, cleanup, logs and import validation')
+console.log('API smoke test passed: cookie auth, RBAC, team filtering, selectable participants/targets, short links, 6-digit invites, configured session duration, timed links, self-exclusion, strict validation, results, batch ops, exports, deployment check, cleanup, logs and import validation')

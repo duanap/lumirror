@@ -39,10 +39,11 @@ PUBLIC_TOKEN_SECRET=<different unique random secret, 32+ characters>
 ALLOWED_ORIGINS=https://your-domain.example
 SESSION_COOKIE_SECURE=true
 ADMIN_SESSION_SECONDS=28800
-PUBLIC_SESSION_SECONDS=7200
 ```
 
 `INITIAL_ADMIN_PASSWORD` is needed only until the first database bootstrap succeeds. Do not commit real values to this repository.
+
+The public evaluation session duration is managed in the admin settings. `PUBLIC_SESSION_SECONDS` remains an optional compatibility fallback for an older database that does not yet contain a valid `publicSessionMinutes` setting.
 
 ## Verify Deployment
 
