@@ -16,7 +16,7 @@ async function call(path,{method='GET',token,cookie,body}={}) {
 }
 
 const health = await call('/health')
-assert.equal(health.payload.data.version,'1.2.4')
+assert.equal(health.payload.data.version,'1.3.0')
 assert.equal(health.payload.data.ready,true)
 
 const productionHealth = await onRequest({

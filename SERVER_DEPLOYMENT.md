@@ -11,13 +11,14 @@ This deployment does not use EdgeOne. Nginx serves `dist`, proxies `/api/` to a 
 │   ├── dist/
 │   ├── edge-functions/
 │   ├── scripts/production-server.mjs
+│   ├── scripts/sqlite-storage.mjs
 │   └── deploy/ecosystem.config.cjs
 └── shared/
     ├── data/lumirror.sqlite
     └── lumirror.env
 ```
 
-`shared/lumirror.env` and `shared/data` must be readable only by the service owner. The SQLite database uses WAL mode and is written by one PM2 process. The environment file contains:
+`shared/lumirror.env` and `shared/data` must be readable only by the service owner. The SQLite database uses WAL mode and dedicated business tables for users, organization, activities, rules, participants, targets, verification codes, tasks, scores, score values, timed invites, logs, and settings. One PM2 process owns the database and each snapshot write is one SQLite transaction. The environment file contains:
 
 ```dotenv
 APP_ENV=production
@@ -31,7 +32,7 @@ ALLOWED_ORIGINS=https://lumirror.duanap.cn
 SESSION_COOKIE_SECURE=true
 ```
 
-The direct SQLite release does not import `employee-review-db.json`. If that legacy JSON file exists, it is left untouched and ignored; the first SQLite startup creates a new database from the configured bootstrap credentials.
+The relational SQLite release does not import `employee-review-db.json` or the older `kv_store` SQLite schema. Legacy files are retained only as rollback artifacts; the first relational startup creates a new database from the configured bootstrap credentials.
 
 After the first successful admin login and password change, remove `INITIAL_ADMIN_PASSWORD` from the environment file and restart the PM2 process. Existing data does not depend on this value.
 

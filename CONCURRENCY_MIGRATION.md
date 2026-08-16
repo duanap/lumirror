@@ -1,6 +1,6 @@
 # Concurrent Scoring Migration
 
-## Confirmed Failure
+## EdgeOne KV: Confirmed Failure
 
 The current storage model reads the full database from `employee_review_db_v1`, mutates an in-memory copy, and overwrites the same KV key. Two score submissions can therefore read the same snapshot and both return success while the later write discards the earlier score.
 
@@ -10,7 +10,11 @@ Run the deterministic reproduction:
 npm run repro:concurrency
 ```
 
-Until the storage migration is complete, the expected result is a non-zero exit with `1 !== 2`: two API submissions succeeded, but only one review remained visible through the admin results API. This command is intentionally separate from the passing validation suite.
+For the EdgeOne KV adapter, the expected result is a non-zero exit with `1 !== 2`: two API submissions succeeded, but only one review remained visible through the admin results API. This command is intentionally separate from the passing validation suite.
+
+## Direct Server: Resolved
+
+Version 1.3.0 stores business entities in relational SQLite tables. `scores.task_id` is unique, score dimensions use `score_values`, all snapshot changes commit in one SQLite transaction, and the single PM2 process serializes HTTP writes. `npm run test:server` verifies two concurrent score submissions become two persisted score rows and survive restart.
 
 ## Required Consistency Contract
 
@@ -22,7 +26,7 @@ The scoring store must provide all of the following:
 - Idempotent retry behavior: a repeated submission for one task cannot create a second score.
 - Durable audit fields for the activity, task, anonymous evaluator hash, score values, total, and submission time.
 
-EdgeOne Pages and the existing Function routes remain the delivery and authorization layer. The high-write scoring records move behind a storage adapter backed by a transactional database. Organization and activity administration can remain in the existing KV snapshot during the first migration phase.
+This remaining migration boundary applies only if EdgeOne Functions are used again. The direct server already uses the transactional SQLite adapter.
 
 ## Implementation Boundary
 

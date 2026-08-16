@@ -1,49 +1,10 @@
 import http from 'node:http'
 import { chmod, mkdir } from 'node:fs/promises'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import onRequest from '../edge-functions/api/[[default]].js'
+import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
-const DATABASE_KEY = 'employee_review_db_v1'
-
-class SqliteKV {
-  constructor(databaseFile) {
-    this.database = new DatabaseSync(databaseFile)
-    this.database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      CREATE TABLE IF NOT EXISTS kv_store (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `)
-    this.readStatement = this.database.prepare('SELECT value FROM kv_store WHERE key = ?')
-    this.writeStatement = this.database.prepare(`
-      INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `)
-  }
-
-  async get(key, options = {}) {
-    if (key !== DATABASE_KEY) return null
-    const value = this.readStatement.get(key)?.value ?? null
-    if (value === null) return null
-    return options.type === 'json' ? JSON.parse(value) : value
-  }
-
-  async put(key, value) {
-    if (key !== DATABASE_KEY) throw new Error(`Unsupported storage key: ${key}`)
-    this.writeStatement.run(key, String(value), new Date().toISOString())
-  }
-
-  close() {
-    this.database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-    this.database.close()
-  }
-}
-
 function requiredEnvironment(name) {
   const value = String(process.env[name] || '').trim()
   if (!value) throw new Error(`${name} is required`)
@@ -96,7 +57,7 @@ const databaseFile = path.join(dataDir, 'lumirror.sqlite')
 process.umask(0o077)
 await mkdir(dataDir, { recursive: true, mode: 0o700 })
 await chmod(dataDir, 0o700)
-const storage = new SqliteKV(databaseFile)
+const storage = new RelationalSqliteStorage(databaseFile)
 await chmod(databaseFile, 0o600)
 
 const env = {
@@ -108,6 +69,7 @@ const env = {
   SESSION_COOKIE_SECURE: process.env.SESSION_COOKIE_SECURE || 'true',
   ADMIN_SESSION_SECONDS: process.env.ADMIN_SESSION_SECONDS || '',
   PUBLIC_SESSION_SECONDS: process.env.PUBLIC_SESSION_SECONDS || '',
+  STORAGE_MODEL: 'sqlite-relational',
   EVALUATION_KV: storage
 }
 

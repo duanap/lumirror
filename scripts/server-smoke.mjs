@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
+import { DatabaseSync } from 'node:sqlite'
 
 const projectRoot = path.resolve(import.meta.dirname, '..')
 const dataDir = await mkdtemp(path.join(tmpdir(), 'lumirror-server-'))
@@ -92,6 +93,7 @@ try {
   assert.equal(health.status, 200)
   assert.equal(health.payload.data.ready, true)
   assert.equal(health.payload.data.kvBound, true)
+  assert.equal(health.payload.data.environment.storageModel, 'sqlite-relational')
 
   const login = await call(running.baseUrl, '/admin/login', {
     method: 'POST',
@@ -155,6 +157,30 @@ try {
   assert.equal(results.status, 200)
   assert.equal(results.payload.data.items.reduce((total, item) => total + Number(item.reviewCount || 0), 0), 2)
 
+  const employeesBeforeFailedWrite = await call(running.baseUrl, '/admin/employees', { cookie: adminCookie })
+  const backup = await call(running.baseUrl, '/admin/export/full-json', {
+    method: 'POST', cookie: adminCookie, body: { confirm: 'EXPORT_FULL_BACKUP' }
+  })
+  assert.equal(backup.status, 200)
+  const invalidSnapshot = structuredClone(backup.payload.data)
+  invalidSnapshot.employees.push({ ...invalidSnapshot.employees[0] })
+  const failedWrite = await call(running.baseUrl, '/admin/import/json', {
+    method: 'POST', cookie: adminCookie, body: { data:invalidSnapshot }
+  })
+  assert.equal(failedWrite.status, 503)
+  assert.equal(failedWrite.payload.code, 'KV_WRITE_FAILED')
+  const employeesAfterFailedWrite = await call(running.baseUrl, '/admin/employees', { cookie: adminCookie })
+  assert.equal(employeesAfterFailedWrite.payload.data.items.length, employeesBeforeFailedWrite.payload.data.items.length)
+
+  const database = new DatabaseSync(path.join(dataDir, 'lumirror.sqlite'))
+  const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name)
+  for (const table of ['users', 'departments', 'teams', 'employees', 'review_periods', 'evaluation_activities', 'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'verification_codes', 'evaluation_tasks', 'scores', 'score_values', 'timed_invites', 'audit_logs', 'settings']) {
+    assert.ok(tables.includes(table), `missing relational business table: ${table}`)
+  }
+  assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
+  database.close()
+
   await stopServer(running.child)
   running = await startServer({ includeBootstrapPassword: false })
   const persistedLogin = await call(running.baseUrl, '/admin/login', {
@@ -163,7 +189,7 @@ try {
   })
   assert.equal(persistedLogin.status, 200)
 
-  console.log('Production SQLite smoke test passed: legacy JSON ignored, bootstrap, persistence across restart, and concurrent scoring')
+  console.log('Production relational SQLite smoke test passed: business tables, bootstrap, restart persistence, atomic writes, and concurrent scoring')
 } finally {
   if (running?.child) await stopServer(running.child)
   await rm(dataDir, { recursive: true, force: true })

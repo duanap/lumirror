@@ -44,7 +44,7 @@ npm run build
 
 The active production target is a direct server deployment; see [SERVER_DEPLOYMENT.md](./SERVER_DEPLOYMENT.md). The older EdgeOne instructions remain in [EDGEONE_DEPLOYMENT.md](./EDGEONE_DEPLOYMENT.md) for reference only.
 
-The current whole-database KV model has a confirmed concurrent-write loss scenario. See [CONCURRENCY_MIGRATION.md](./CONCURRENCY_MIGRATION.md) for the deterministic reproduction, target consistency contract, and safe migration sequence.
+The direct-server deployment stores business entities in relational SQLite tables and serializes writes. The optional EdgeOne KV adapter remains snapshot-based; see [CONCURRENCY_MIGRATION.md](./CONCURRENCY_MIGRATION.md) for its deterministic concurrency reproduction and migration boundary.
 
 ## Packaging
 

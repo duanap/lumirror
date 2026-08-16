@@ -1,7 +1,7 @@
-// Employee Anonymous Review - EdgeOne Edge Function v1.2.4
+// Employee Anonymous Review - EdgeOne Edge Function v1.3.0
 // Single-file runtime entry for maximum EdgeOne compatibility.
 
-const RUNTIME_VERSION = '1.2.4'
+const RUNTIME_VERSION = '1.3.0'
 const DATABASE_KEY = 'employee_review_db_v1'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -886,6 +886,7 @@ function deploymentCheck(context, db) {
   const allowlist = getEnv(context,'ALLOWED_ORIGINS','').split(',').map((x) => x.trim()).filter(Boolean)
   const adminSecretsConfigured = Boolean(getEnv(context,'ADMIN_TOKEN_SECRET',''))
   const publicSecretsConfigured = Boolean(getEnv(context,'PUBLIC_TOKEN_SECRET',''))
+  const relationalStorage = getEnv(context,'STORAGE_MODEL','') === 'sqlite-relational'
   const defaultAdminNeedsChange = db.users.some((x) => x.username === 'admin' && x.mustChangePassword)
   const checks = [
     { id:'app-env', label:'生产环境标记', status:production ? 'pass' : 'warn', message:production ? 'APP_ENV=production 已配置' : '当前不是 production，上传前建议设置 APP_ENV=production' },
@@ -894,7 +895,7 @@ function deploymentCheck(context, db) {
     { id:'cors', label:'CORS 允许来源', status:production ? (allowlist.length ? 'pass' : 'warn') : 'warn', message:allowlist.length ? `已配置 ${allowlist.length} 个允许来源` : '生产环境建议配置 ALLOWED_ORIGINS' },
     { id:'cookie-secure', label:'后台 Cookie 安全标记', status:cookieSecure(context) ? 'pass' : 'warn', message:cookieSecure(context) ? '后台会话 Cookie 将带 Secure' : '当前环境未启用 Secure Cookie，本地 HTTP 调试可接受' },
     { id:'default-admin', label:'默认管理员密码', status:defaultAdminNeedsChange ? 'fail' : 'pass', message:defaultAdminNeedsChange ? '仍有初始管理员需要修改密码' : '未发现强制改密的初始管理员' },
-    { id:'storage-model', label:'KV 并发模型', status:'warn', message:'当前仍是整库 JSON 读写，低并发可用；高并发评价建议后续拆分为按记录 KV' }
+    { id:'storage-model', label:'存储模型', status:relationalStorage?'pass':'warn', message:relationalStorage?'业务实体已使用 SQLite 关系表并由事务写入':'当前仍是整库快照存储，高并发评价建议使用关系表存储' }
   ]
   return { version:RUNTIME_VERSION, appEnv, checks, summary:{ pass:checks.filter((x) => x.status === 'pass').length, warn:checks.filter((x) => x.status === 'warn').length, fail:checks.filter((x) => x.status === 'fail').length } }
 }
@@ -1756,6 +1757,7 @@ export default async function onRequest(context) {
     }
     const environment = {
       appEnv,
+      storageModel:getEnv(context,'STORAGE_MODEL',kv?'kv-snapshot':'memory'),
       adminSecretConfigured:Boolean(getEnv(context,'ADMIN_TOKEN_SECRET','')),
       publicSecretConfigured:Boolean(getEnv(context,'PUBLIC_TOKEN_SECRET','')),
       initialAdminPasswordConfigured:Boolean(getEnv(context,'INITIAL_ADMIN_PASSWORD',''))
