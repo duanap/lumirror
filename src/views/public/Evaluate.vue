@@ -111,18 +111,26 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 
 <template>
   <PublicShell compact>
-    <template #title>{{ task?.evaluation.teamName || '团队' }} · 员工互评</template>
+    <template #title>{{ task?.evaluation.name || '匿名评价' }}</template>
     <div v-if="loading" class="score-card loading-card">正在加载评价任务...</div>
     <article v-else-if="task" class="score-card">
       <header class="task-head">
         <div class="target-main">
-          <EmployeeAvatar :avatar="task.target.avatar" :gender="task.target.gender" :size="108" :alt="`${task.target.name}的头像`"/>
+          <span v-if="task.targetType==='team'" class="team-avatar" aria-hidden="true"><IconGlyph name="team" :size="46"/></span>
+          <EmployeeAvatar v-else :avatar="task.target.avatar" :gender="task.target.gender" :size="108" :alt="`${task.target.name}的头像`"/>
           <div class="target-copy">
             <h2>{{ task.target.name }}</h2>
             <div class="target-meta">
-              <span><IconGlyph name="user" :size="17"/>{{ task.target.gender==='female'?'女':task.target.gender==='male'?'男':'未知' }}</span>
-              <span><IconGlyph name="team" :size="17"/>{{ task.target.teamName }}</span>
-              <span><IconGlyph name="briefcase" :size="17"/>{{ task.target.position }}</span>
+              <template v-if="task.targetType==='team'">
+                <span><IconGlyph name="team" :size="17"/>团队整体</span>
+                <span><IconGlyph name="briefcase" :size="17"/>{{ task.target.departmentName || '未设置部门' }}</span>
+                <span><IconGlyph name="user" :size="17"/>{{ task.target.memberCount || 0 }} 名成员</span>
+              </template>
+              <template v-else>
+                <span><IconGlyph name="user" :size="17"/>{{ task.target.gender==='female'?'女':task.target.gender==='male'?'男':'未知' }}</span>
+                <span><IconGlyph name="team" :size="17"/>{{ task.target.teamName }}</span>
+                <span><IconGlyph name="briefcase" :size="17"/>{{ task.target.position }}</span>
+              </template>
             </div>
           </div>
         </div>
@@ -166,7 +174,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       </button>
 
       <footer class="remaining">
-        <div><el-icon :size="20"><User /></el-icon><span>您还剩 <b>{{task.remaining}}</b> 人待评价</span></div>
+        <div><el-icon :size="20"><User /></el-icon><span>您还剩 <b>{{task.remaining}}</b> {{task.targetType==='team'?'个团队':'人'}}待评价</span></div>
         <div class="progress-track" role="progressbar" :aria-valuenow="progress" aria-valuemin="0" aria-valuemax="100" :aria-label="`填写进度 ${progress}%`">
           <span :style="{width:`${progress}%`}"/>
         </div>
@@ -183,4 +191,6 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 @media(max-width:640px){.total-card{border-radius:16px 16px 0 0}.rule-card{margin:0 18px;padding:14px 16px 16px}}
 @media(max-width:390px){.target-meta{gap:6px}.target-meta span{padding:0 8px}.score-row{grid-template-columns:38px minmax(76px,1fr) minmax(104px,128px) 16px;gap:7px}.score-icon{width:36px;height:36px}.score-copy strong{font-size:15px}.score-row input{height:48px;font-size:19px}.total-card{padding-left:8px;padding-right:8px}.total-card strong{font-size:17px}.remaining{gap:10px;font-size:12px}}
 @media(prefers-reduced-motion:reduce){.progress-track span,.submit-btn{transition-duration:.01ms}}
+.team-avatar{position:absolute;left:50%;top:-58px;display:grid;place-items:center;width:108px;height:108px;border-radius:50%;color:var(--brand);background:#fff2e9;box-shadow:0 0 0 8px #fff,0 0 0 10px #f5dfd2,0 15px 30px rgba(109,57,29,.12);transform:translateX(-50%)}
+@media(max-width:640px){.team-avatar{top:-48px;box-shadow:0 0 0 6px #fff,0 0 0 8px #f5dfd2,0 12px 24px rgba(109,57,29,.12);transform:translateX(-50%) scale(.8333);transform-origin:center}}
 </style>

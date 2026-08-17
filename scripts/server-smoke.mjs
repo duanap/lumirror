@@ -94,11 +94,25 @@ try {
     CREATE TABLE app_state (singleton INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, domain_version INTEGER NOT NULL, created_at TEXT, updated_at TEXT, extra_json TEXT NOT NULL);
     INSERT INTO app_state VALUES (1, 1, 3, NULL, NULL, '{}');
     CREATE TABLE evaluation_rules (evaluation_id TEXT NOT NULL, rule_id TEXT NOT NULL, name TEXT NOT NULL, min_value REAL NOT NULL, max_value REAL NOT NULL, weight REAL NOT NULL, enabled INTEGER NOT NULL, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL, PRIMARY KEY (evaluation_id, rule_id));
+    CREATE TABLE evaluation_targets (evaluation_id TEXT NOT NULL, employee_id TEXT NOT NULL, list_order INTEGER NOT NULL, PRIMARY KEY (evaluation_id, employee_id));
+    INSERT INTO evaluation_targets VALUES ('eval_legacy', 'emp_legacy', 0);
+    CREATE TABLE evaluation_tasks (id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL, verification_code_id TEXT NOT NULL, target_employee_id TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL);
+    INSERT INTO evaluation_tasks VALUES ('task_legacy', 'eval_legacy', 'verify_legacy', 'emp_legacy', 'submitted', '{"id":"task_legacy","evaluationCodeId":"eval_legacy","verifyCodeId":"verify_legacy","targetEmployeeId":"emp_legacy","status":"submitted"}', 0);
+    CREATE TABLE scores (id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE, target_employee_id TEXT NOT NULL, total REAL NOT NULL, created_at TEXT NOT NULL, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL);
+    INSERT INTO scores VALUES ('score_legacy', 'eval_legacy', 'task_legacy', 'emp_legacy', 90, '2026-01-01T00:00:00.000Z', '{"id":"score_legacy","evaluationCodeId":"eval_legacy","taskId":"task_legacy","targetEmployeeId":"emp_legacy","total":90,"createdAt":"2026-01-01T00:00:00.000Z"}', 0);
+    CREATE TABLE score_values (score_id TEXT NOT NULL, rule_id TEXT NOT NULL, value REAL NOT NULL, list_order INTEGER NOT NULL, PRIMARY KEY (score_id, rule_id));
+    INSERT INTO score_values VALUES ('score_legacy', 'ability', 90, 0);
+    CREATE INDEX idx_scores_evaluation_target ON scores(evaluation_id, target_employee_id);
   `)
   schemaOne.close()
   const migratedStorage = new RelationalSqliteStorage(schemaOneFile)
   assert.ok(migratedStorage.database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'))
-  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 2)
+  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 3)
+  for (const table of ['evaluation_targets','evaluation_tasks','scores']) {
+    const legacyTarget = migratedStorage.database.prepare(`SELECT target_type, target_id FROM ${table}`).get()
+    assert.equal(legacyTarget.target_type,'employee')
+    assert.equal(legacyTarget.target_id,'emp_legacy')
+  }
   migratedStorage.close()
 
   await writeFile(path.join(dataDir, 'employee-review-db.json'), '{"legacy":true}', { mode: 0o600 })
@@ -171,6 +185,25 @@ try {
   assert.equal(results.status, 200)
   assert.equal(results.payload.data.items.reduce((total, item) => total + Number(item.reviewCount || 0), 0), 2)
 
+  const teamCreated = await call(running.baseUrl, '/admin/evaluation-activities/create-flow', {
+    method: 'POST',
+    cookie: adminCookie,
+    body: {
+      name: '服务器团队评价测试',
+      teamId: 'team_rd',
+      participantMode: 'selected',
+      participantEmployeeIds: ['emp_001'],
+      targetType: 'team',
+      targetMode: 'selected',
+      targetTeamIds: ['team_rd', 'team_pm'],
+      startTime: new Date(now - 60_000).toISOString(),
+      endTime: new Date(now + 86_400_000).toISOString()
+    }
+  })
+  assert.equal(teamCreated.status, 200)
+  assert.equal(teamCreated.payload.data.activity.targetType, 'team')
+  assert.equal(teamCreated.payload.data.taskCount, 2)
+
   const employeesBeforeFailedWrite = await call(running.baseUrl, '/admin/employees', { cookie: adminCookie })
   const backup = await call(running.baseUrl, '/admin/export/full-json', {
     method: 'POST', cookie: adminCookie, body: { confirm: 'EXPORT_FULL_BACKUP' }
@@ -192,9 +225,12 @@ try {
     assert.ok(tables.includes(table), `missing relational business table: ${table}`)
   }
   assert.ok(database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'), 'evaluation_rules.operation must be queryable')
-  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 2)
+  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 3)
   assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_targets WHERE target_type = 'team'").get().count, 2)
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_tasks WHERE target_type = 'team'").get().count, 2)
+  assert.equal(database.prepare('PRAGMA foreign_key_check').all().length, 0)
   database.close()
 
   await stopServer(running.child)

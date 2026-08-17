@@ -9,23 +9,31 @@ A named time window used to group evaluation activities.
 _Avoid_: Cycle, season
 
 **Evaluation Activity**:
-A scheduled evaluation with one rule set, a participant set, and a target employee set.
+A scheduled evaluation with one rule set, a participant set, and either a target employee set or a target team set.
 _Avoid_: Evaluation code, campaign
 
 **Participant**:
 An employee selected to evaluate targets in an evaluation activity.
 _Avoid_: Reviewer, user
 
-**Target Employee**:
-An employee selected to receive evaluations in an evaluation activity.
+**Evaluation Target**:
+An employee or team selected to receive evaluations in one evaluation activity. Every activity uses exactly one target type.
 _Avoid_: Reviewee, subject
+
+**Target Employee**:
+An employee used as an evaluation target in a member-target activity.
+_Avoid_: Reviewee
+
+**Target Team**:
+A team used as an evaluation target in a team-target activity. Its result represents the team as a whole, not an average calculated from its members' separate results.
+_Avoid_: Team member set
 
 **Verification Code**:
 A single participant's credential for entering an evaluation activity and completing assigned tasks.
 _Avoid_: Invitation code, password
 
 **Evaluation Task**:
-One participant's assignment to evaluate one target employee in one evaluation activity.
+One participant's assignment to evaluate one evaluation target in one evaluation activity.
 _Avoid_: Review, score
 
 **Score Submission**:

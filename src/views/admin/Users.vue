@@ -15,7 +15,7 @@ const loading = ref(false)
 const selectedRows = ref<any[]>([])
 const form = reactive<any>({
   id:'', username:'', displayName:'', password:'', role:'team_leader',
-  departmentId:'', teamId:'', employeeId:'', status:'active'
+  departmentId:'', teamId:'', employeeId:'', status:'active',mustChangePassword:true
 })
 
 const filteredTeams = computed(() => form.departmentId
@@ -50,7 +50,7 @@ function resetScopeByRole() {
   if (form.role === 'team_leader') form.employeeId = ''
 }
 function add() {
-  Object.assign(form,{id:'',username:'',displayName:'',password:'',role:'team_leader',departmentId:'',teamId:'',employeeId:'',status:'active'})
+  Object.assign(form,{id:'',username:'',displayName:'',password:'',role:'team_leader',departmentId:'',teamId:'',employeeId:'',status:'active',mustChangePassword:true})
   dialog.value = true
 }
 function edit(row:any) {
@@ -136,6 +136,7 @@ onMounted(load)
           <el-form-item label="登录账号"><el-input v-model="form.username" maxlength="32" placeholder="3-32位字母或数字"/></el-form-item>
           <el-form-item label="显示名称"><el-input v-model="form.displayName" maxlength="30"/></el-form-item>
           <el-form-item :label="form.id?'重置密码（留空不修改）':'初始密码'"><el-input v-model="form.password" type="password" show-password placeholder="至少8位"/></el-form-item>
+          <el-form-item v-if="!form.id" label="首次登录强制修改密码"><el-switch v-model="form.mustChangePassword"/><small>关闭后可直接使用初始密码进入后台</small></el-form-item>
           <el-form-item label="角色"><el-select v-model="form.role" style="width:100%" @change="resetScopeByRole"><el-option v-for="role in options.roles" :key="role.value" :label="role.label" :value="role.value"/></el-select></el-form-item>
           <el-form-item v-if="form.role==='leader'" label="绑定部门"><el-select v-model="form.departmentId" style="width:100%"><el-option v-for="x in options.departments" :key="x.id" :label="x.name" :value="x.id"/></el-select></el-form-item>
           <template v-if="form.role==='team_leader'">
@@ -155,5 +156,5 @@ onMounted(load)
 </template>
 
 <style scoped>
-.notice{margin:20px 0 12px}.field-toolbar{justify-content:flex-end;margin:0 0 16px}.batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px}.batch-bar span{margin-right:auto;color:var(--muted)}.batch-bar b{color:var(--brand)}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}@media(max-width:650px){.form-grid{grid-template-columns:1fr}.batch-bar{align-items:stretch;flex-direction:column}}
+.notice{margin:20px 0 12px}.field-toolbar{justify-content:flex-end;margin:0 0 16px}.batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px}.batch-bar span{margin-right:auto;color:var(--muted)}.batch-bar b{color:var(--brand)}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.form-grid small{display:block;margin-top:6px;color:var(--muted)}@media(max-width:650px){.form-grid{grid-template-columns:1fr}.batch-bar{align-items:stretch;flex-direction:column}}
 </style>

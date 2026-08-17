@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 
 const DATABASE_KEY = 'employee_review_db_v1'
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 const COLLECTION_KEYS = [
   'users', 'departments', 'teams', 'employees', 'periods', 'evaluationCodes',
   'verifyCodes', 'tasks', 'scores', 'timedInvites', 'logs'
@@ -24,6 +24,19 @@ const json = (value) => JSON.stringify(value ?? null)
 const parseJson = (value, fallback) => value === null || value === undefined || value === '' ? fallback : JSON.parse(value)
 const textOrNull = (value) => value === null || value === undefined || value === '' ? null : String(value)
 const numberOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null
+const snapshotTargetType = (item) => item?.targetType === 'team' || item?.targetTeamId ? 'team' : 'employee'
+const snapshotTargetId = (item) => String(item?.targetId || (snapshotTargetType(item) === 'team' ? item?.targetTeamId : item?.targetEmployeeId) || '')
+const withTargetReference = (item,targetType,targetId) => {
+  const output = {...item,targetType,targetId}
+  if (targetType === 'team') {
+    output.targetTeamId = targetId
+    delete output.targetEmployeeId
+  } else {
+    output.targetEmployeeId = targetId
+    delete output.targetTeamId
+  }
+  return output
+}
 
 function without(item, keys) {
   const output = { ...item }
@@ -108,8 +121,9 @@ export class RelationalSqliteStorage {
       );
       CREATE TABLE IF NOT EXISTS evaluation_targets (
         evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
-        employee_id TEXT NOT NULL REFERENCES employees(id), list_order INTEGER NOT NULL,
-        PRIMARY KEY (evaluation_id, employee_id)
+        target_type TEXT NOT NULL CHECK (target_type IN ('employee', 'team')),
+        target_id TEXT NOT NULL, list_order INTEGER NOT NULL,
+        PRIMARY KEY (evaluation_id, target_type, target_id)
       );
       CREATE TABLE IF NOT EXISTS verification_codes (
         id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
@@ -120,13 +134,15 @@ export class RelationalSqliteStorage {
       CREATE TABLE IF NOT EXISTS evaluation_tasks (
         id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
         verification_code_id TEXT NOT NULL REFERENCES verification_codes(id) ON DELETE CASCADE,
-        target_employee_id TEXT NOT NULL REFERENCES employees(id), status TEXT NOT NULL,
+        target_type TEXT NOT NULL CHECK (target_type IN ('employee', 'team')),
+        target_id TEXT NOT NULL, status TEXT NOT NULL,
         payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS scores (
         id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
         task_id TEXT NOT NULL UNIQUE REFERENCES evaluation_tasks(id) ON DELETE CASCADE,
-        target_employee_id TEXT NOT NULL REFERENCES employees(id), total REAL NOT NULL,
+        target_type TEXT NOT NULL CHECK (target_type IN ('employee', 'team')),
+        target_id TEXT NOT NULL, total REAL NOT NULL,
         created_at TEXT NOT NULL, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS score_values (
@@ -148,13 +164,73 @@ export class RelationalSqliteStorage {
       CREATE INDEX IF NOT EXISTS idx_evaluations_team ON evaluation_activities(team_id);
       CREATE INDEX IF NOT EXISTS idx_verification_evaluation ON verification_codes(evaluation_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_verification_status ON evaluation_tasks(verification_code_id, status);
-      CREATE INDEX IF NOT EXISTS idx_scores_evaluation_target ON scores(evaluation_id, target_employee_id);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON audit_logs(created_at);
-      PRAGMA user_version = ${SCHEMA_VERSION};
     `)
+    this.migrateTargetSchema()
     const ruleColumns = new Set(this.database.prepare('PRAGMA table_info(evaluation_rules)').all().map((column) => column.name))
     if (!ruleColumns.has('operation')) this.database.exec("ALTER TABLE evaluation_rules ADD COLUMN operation TEXT NOT NULL DEFAULT 'add' CHECK (operation IN ('add', 'subtract'))")
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_tasks_verification_status ON evaluation_tasks(verification_code_id, status);
+      CREATE INDEX IF NOT EXISTS idx_scores_evaluation_target ON scores(evaluation_id, target_type, target_id);
+      PRAGMA user_version = ${SCHEMA_VERSION};
+    `)
     this.database.prepare('UPDATE app_state SET schema_version = ? WHERE singleton = 1 AND schema_version < ?').run(SCHEMA_VERSION,SCHEMA_VERSION)
+  }
+
+  migrateTargetSchema() {
+    const columns = new Set(this.database.prepare('PRAGMA table_info(evaluation_targets)').all().map((column) => column.name))
+    if (columns.has('target_type')) return
+    this.database.exec('PRAGMA foreign_keys = OFF')
+    try {
+      this.database.exec(`
+        BEGIN IMMEDIATE;
+        CREATE TABLE evaluation_targets_v3 (
+          evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
+          target_type TEXT NOT NULL CHECK (target_type IN ('employee', 'team')),
+          target_id TEXT NOT NULL, list_order INTEGER NOT NULL,
+          PRIMARY KEY (evaluation_id, target_type, target_id)
+        );
+        INSERT INTO evaluation_targets_v3 (evaluation_id, target_type, target_id, list_order)
+          SELECT evaluation_id, 'employee', employee_id, list_order FROM evaluation_targets;
+        CREATE TABLE evaluation_tasks_v3 (
+          id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
+          verification_code_id TEXT NOT NULL REFERENCES verification_codes(id) ON DELETE CASCADE,
+          target_type TEXT NOT NULL CHECK (target_type IN ('employee', 'team')),
+          target_id TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
+        );
+        INSERT INTO evaluation_tasks_v3 (id, evaluation_id, verification_code_id, target_type, target_id, status, payload_json, list_order)
+          SELECT id, evaluation_id, verification_code_id, 'employee', target_employee_id, status, payload_json, list_order FROM evaluation_tasks;
+        CREATE TABLE scores_v3 (
+          id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL REFERENCES evaluation_activities(id) ON DELETE CASCADE,
+          task_id TEXT NOT NULL UNIQUE REFERENCES evaluation_tasks_v3(id) ON DELETE CASCADE,
+          target_type TEXT NOT NULL CHECK (target_type IN ('employee', 'team')),
+          target_id TEXT NOT NULL, total REAL NOT NULL, created_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
+        );
+        INSERT INTO scores_v3 (id, evaluation_id, task_id, target_type, target_id, total, created_at, payload_json, list_order)
+          SELECT id, evaluation_id, task_id, 'employee', target_employee_id, total, created_at, payload_json, list_order FROM scores;
+        CREATE TABLE score_values_v3 (
+          score_id TEXT NOT NULL REFERENCES scores_v3(id) ON DELETE CASCADE, rule_id TEXT NOT NULL,
+          value REAL NOT NULL, list_order INTEGER NOT NULL, PRIMARY KEY (score_id, rule_id)
+        );
+        INSERT INTO score_values_v3 (score_id, rule_id, value, list_order)
+          SELECT score_id, rule_id, value, list_order FROM score_values;
+        DROP TABLE score_values;
+        DROP TABLE scores;
+        DROP TABLE evaluation_tasks;
+        DROP TABLE evaluation_targets;
+        ALTER TABLE evaluation_targets_v3 RENAME TO evaluation_targets;
+        ALTER TABLE evaluation_tasks_v3 RENAME TO evaluation_tasks;
+        ALTER TABLE scores_v3 RENAME TO scores;
+        ALTER TABLE score_values_v3 RENAME TO score_values;
+        COMMIT;
+      `)
+    } catch (error) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw error
+    } finally {
+      this.database.exec('PRAGMA foreign_keys = ON')
+    }
   }
 
   async get(key, options = {}) {
@@ -166,6 +242,10 @@ export class RelationalSqliteStorage {
     for (const [collection, table] of Object.entries(COLLECTION_TABLES)) {
       collections[collection] = this.database.prepare(`SELECT payload_json FROM ${table} ORDER BY list_order`).all().map((row) => parseJson(row.payload_json, {}))
     }
+    collections.tasks = this.database.prepare('SELECT target_type, target_id, payload_json FROM evaluation_tasks ORDER BY list_order').all()
+      .map((row) => withTargetReference(parseJson(row.payload_json,{}),row.target_type,row.target_id))
+    collections.scores = this.database.prepare('SELECT target_type, target_id, payload_json FROM scores ORDER BY list_order').all()
+      .map((row) => withTargetReference(parseJson(row.payload_json,{}),row.target_type,row.target_id))
 
     const rules = new Map()
     for (const row of this.database.prepare('SELECT evaluation_id, operation, payload_json FROM evaluation_rules ORDER BY evaluation_id, list_order').all()) {
@@ -174,10 +254,12 @@ export class RelationalSqliteStorage {
       rules.set(row.evaluation_id,items)
     }
     const participants = rowsByParent(this.database.prepare('SELECT evaluation_id, employee_id FROM evaluation_participants ORDER BY evaluation_id, list_order').all(), 'evaluation_id', 'employee_id')
-    const targets = rowsByParent(this.database.prepare('SELECT evaluation_id, employee_id FROM evaluation_targets ORDER BY evaluation_id, list_order').all(), 'evaluation_id', 'employee_id')
+    const employeeTargets = rowsByParent(this.database.prepare("SELECT evaluation_id, target_id FROM evaluation_targets WHERE target_type = 'employee' ORDER BY evaluation_id, list_order").all(), 'evaluation_id', 'target_id')
+    const teamTargets = rowsByParent(this.database.prepare("SELECT evaluation_id, target_id FROM evaluation_targets WHERE target_type = 'team' ORDER BY evaluation_id, list_order").all(), 'evaluation_id', 'target_id')
     collections.evaluationCodes = collections.evaluationCodes.map((item) => ({
       ...item, rules:rules.get(item.id) || [],
-      participantEmployeeIds:participants.get(item.id) || [], targetEmployeeIds:targets.get(item.id) || []
+      participantEmployeeIds:participants.get(item.id) || [],
+      targetEmployeeIds:employeeTargets.get(item.id) || [],targetTeamIds:teamTargets.get(item.id) || []
     }))
 
     const values = new Map()
@@ -230,23 +312,24 @@ export class RelationalSqliteStorage {
       const insertEvaluation = this.database.prepare('INSERT INTO evaluation_activities (id, code, link_code, name, period_id, department_id, team_id, status, start_time, end_time, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const insertRule = this.database.prepare('INSERT INTO evaluation_rules (evaluation_id, rule_id, name, min_value, max_value, weight, operation, enabled, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const insertParticipant = this.database.prepare('INSERT INTO evaluation_participants (evaluation_id, employee_id, list_order) VALUES (?, ?, ?)')
-      const insertTarget = this.database.prepare('INSERT INTO evaluation_targets (evaluation_id, employee_id, list_order) VALUES (?, ?, ?)')
+      const insertTarget = this.database.prepare('INSERT INTO evaluation_targets (evaluation_id, target_type, target_id, list_order) VALUES (?, ?, ?, ?)')
       for (const [index,item] of (database.evaluationCodes || []).entries()) {
-        insertEvaluation.run(item.id,item.code,item.linkCode,item.name,item.periodId,item.departmentId,item.teamId,item.status || 'active',item.startTime,item.endTime,json(without(item,['rules','participantEmployeeIds','targetEmployeeIds'])),index)
+        insertEvaluation.run(item.id,item.code,item.linkCode,item.name,item.periodId,item.departmentId,item.teamId,item.status || 'active',item.startTime,item.endTime,json(without(item,['rules','participantEmployeeIds','targetEmployeeIds','targetTeamIds'])),index)
         for (const [ruleIndex,rule] of (item.rules || []).entries()) insertRule.run(item.id,rule.id,rule.name,Number(rule.min),Number(rule.max),Number(rule.weight ?? 100),rule.operation === 'subtract' ? 'subtract' : 'add',rule.enabled ? 1 : 0,json({...rule,operation:rule.operation === 'subtract' ? 'subtract' : 'add'}),ruleIndex)
         for (const [participantIndex,employeeId] of (item.participantEmployeeIds || []).entries()) insertParticipant.run(item.id,employeeId,participantIndex)
-        for (const [targetIndex,employeeId] of (item.targetEmployeeIds || []).entries()) insertTarget.run(item.id,employeeId,targetIndex)
+        for (const [targetIndex,employeeId] of (item.targetEmployeeIds || []).entries()) insertTarget.run(item.id,'employee',employeeId,targetIndex)
+        for (const [targetIndex,teamId] of (item.targetTeamIds || []).entries()) insertTarget.run(item.id,'team',teamId,targetIndex)
       }
 
       const insertVerify = this.database.prepare('INSERT INTO verification_codes (id, evaluation_id, participant_employee_id, code_hash, code_fingerprint, status, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       for (const [index,item] of (database.verifyCodes || []).entries()) insertVerify.run(item.id,item.evaluationCodeId,textOrNull(item.participantEmployeeId),item.codeHash,item.codeFingerprint,item.status || 'unused',json(item),index)
-      const insertTask = this.database.prepare('INSERT INTO evaluation_tasks (id, evaluation_id, verification_code_id, target_employee_id, status, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      for (const [index,item] of (database.tasks || []).entries()) insertTask.run(item.id,item.evaluationCodeId,item.verifyCodeId,item.targetEmployeeId,item.status || 'pending',json(item),index)
+      const insertTask = this.database.prepare('INSERT INTO evaluation_tasks (id, evaluation_id, verification_code_id, target_type, target_id, status, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      for (const [index,item] of (database.tasks || []).entries()) insertTask.run(item.id,item.evaluationCodeId,item.verifyCodeId,snapshotTargetType(item),snapshotTargetId(item),item.status || 'pending',json(item),index)
 
-      const insertScore = this.database.prepare('INSERT INTO scores (id, evaluation_id, task_id, target_employee_id, total, created_at, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      const insertScore = this.database.prepare('INSERT INTO scores (id, evaluation_id, task_id, target_type, target_id, total, created_at, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       const insertScoreValue = this.database.prepare('INSERT INTO score_values (score_id, rule_id, value, list_order) VALUES (?, ?, ?, ?)')
       for (const [index,item] of (database.scores || []).entries()) {
-        insertScore.run(item.id,item.evaluationCodeId,item.taskId,item.targetEmployeeId,Number(item.total),item.createdAt,json(without(item,['values'])),index)
+        insertScore.run(item.id,item.evaluationCodeId,item.taskId,snapshotTargetType(item),snapshotTargetId(item),Number(item.total),item.createdAt,json(without(item,['values'])),index)
         for (const [valueIndex,[ruleId,scoreValue]] of Object.entries(item.values || {}).entries()) insertScoreValue.run(item.id,ruleId,Number(scoreValue),valueIndex)
       }
 

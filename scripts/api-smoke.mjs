@@ -91,6 +91,18 @@ const teamPasswordChange = await call('/admin/change-password',{
   body:{currentPassword:'teamlead123',newPassword:'teamlead1234',confirmPassword:'teamlead1234'}
 })
 assert.equal(teamPasswordChange.status,200)
+
+const directUser = await call('/admin/users',{
+  method:'POST',cookie:adminCookie,
+  body:{username:'directlead',displayName:'无需首次改密账号',password:'directlead123',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active',mustChangePassword:false}
+})
+assert.equal(directUser.status,200)
+assert.equal(directUser.payload.data.mustChangePassword,false)
+const directLogin = await call('/admin/login',{method:'POST',body:{username:'directlead',password:'directlead123'}})
+assert.equal(directLogin.status,200)
+assert.equal(directLogin.payload.user.mustChangePassword,false)
+const directDashboard = await call('/admin/dashboard',{cookie:directLogin.cookie})
+assert.equal(directDashboard.status,200)
 const forbiddenUsers = await call('/admin/users',{cookie:teamCookie})
 assert.equal(forbiddenUsers.status,403)
 const scopedEmployees = await call('/admin/employees',{cookie:teamCookie})
@@ -198,6 +210,42 @@ const results = await call(`/admin/results?evaluationCodeId=${created.payload.da
 assert.equal(results.status,200)
 assert.equal(results.payload.data.items.length,3)
 assert.ok(results.payload.data.items.every((x) => x.teamName === '研发团队'))
+
+const teamActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{
+    name:'团队整体评分测试',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],
+    targetType:'team',targetMode:'selected',targetTeamIds:['team_rd','team_pm'],
+    startTime:start,endTime:end
+  }
+})
+assert.equal(teamActivity.status,200)
+assert.equal(teamActivity.payload.data.activity.targetType,'team')
+assert.equal(teamActivity.payload.data.targetCount,2)
+assert.equal(teamActivity.payload.data.taskCount,2)
+const teamEntry = await call('/public/verify-entry',{
+  method:'POST',body:{evaluationCode:teamActivity.payload.data.activity.linkCode,verifyCode:teamActivity.payload.data.verifyCodes[0].code}
+})
+assert.equal(teamEntry.status,200)
+let teamRemaining = 2
+while (teamRemaining > 0) {
+  const teamTask = await call('/public/current-task',{token:teamEntry.payload.token})
+  assert.equal(teamTask.status,200)
+  assert.equal(teamTask.payload.data.targetType,'team')
+  assert.equal(teamTask.payload.data.target.targetType,'team')
+  assert.ok(['team_rd','team_pm'].includes(teamTask.payload.data.target.id))
+  const teamSubmit = await call('/public/submit-score',{
+    method:'POST',token:teamEntry.payload.token,
+    body:{taskId:teamTask.payload.data.id,scores:{ability:91,attitude:89,collaboration:90}}
+  })
+  assert.equal(teamSubmit.status,200)
+  teamRemaining = teamSubmit.payload.data.remaining
+}
+const teamResults = await call(`/admin/results?evaluationCodeId=${teamActivity.payload.data.activity.id}`,{cookie:adminCookie})
+assert.equal(teamResults.status,200)
+assert.equal(teamResults.payload.data.targetType,'team')
+assert.equal(teamResults.payload.data.items.length,2)
+assert.ok(teamResults.payload.data.items.every((item) => item.targetType === 'team' && item.reviewCount === 1))
 
 const customRules = [
   {id:'quality',name:'交付质量',min:60,max:99,weight:100,operation:'add',enabled:true},

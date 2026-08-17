@@ -18,7 +18,7 @@ async function login() {
     if (result.user) {
       localStorage.removeItem('admin_token')
       storeUser(result.user)
-      router.replace(result.user.mustChangePassword ? '/admin/settings' : '/admin/dashboard')
+      router.replace('/admin/dashboard')
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '登录失败')
@@ -38,7 +38,7 @@ async function login() {
         <el-form-item><el-input v-model="form.password" :prefix-icon="Lock" type="password" show-password placeholder="登录密码" autocomplete="current-password"/></el-form-item>
         <el-button type="primary" native-type="submit" :loading="loading">登录后台</el-button>
       </el-form>
-      <small>首次登录后请立即修改默认密码，并妥善保管管理员账号。</small>
+      <small>如账号启用了首次改密，登录后需先设置新密码；请妥善保管后台账号。</small>
     </section>
   </main>
 </template>
