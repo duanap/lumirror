@@ -206,6 +206,10 @@ try {
   assert.equal(archivedActivity.status,200)
   const archivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.deepEqual(archivedResults.payload.data.items,results.payload.data.items)
+  const archivedTrend = await call(running.baseUrl, '/admin/trends?targetType=employee&targetId=emp_002', { cookie:adminCookie })
+  assert.equal(archivedTrend.status,200)
+  assert.equal(archivedTrend.payload.data.points.length,1)
+  assert.equal(archivedTrend.payload.data.points[0].archived,true)
 
   const teamCreated = await call(running.baseUrl, '/admin/evaluation-activities/create-flow', {
     method: 'POST',
@@ -269,6 +273,8 @@ try {
   assert.equal(persistedEmployees.payload.data.items.find((item) => item.id === 'emp_003').tags[0].name, '服务器标签')
   const persistedArchivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie:persistedLogin.cookie })
   assert.deepEqual(persistedArchivedResults.payload.data.items,results.payload.data.items)
+  const persistedArchivedTrend = await call(running.baseUrl, '/admin/trends?targetType=employee&targetId=emp_002', { cookie:persistedLogin.cookie })
+  assert.deepEqual(persistedArchivedTrend.payload.data.points,archivedTrend.payload.data.points)
   const unarchivedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
     method:'PUT',cookie:persistedLogin.cookie,body:{status:'active'}
   })

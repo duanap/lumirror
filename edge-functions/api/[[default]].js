@@ -1969,6 +1969,48 @@ async function adminRoutes(context,path,method,db) {
     })
   }
 
+  if (path === '/admin/trends/options' && method === 'GET') {
+    const denied = requirePermission(session,'results:view'); if (denied) return denied
+    if (session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+    return ok({
+      employees:scopeEmployees(db,session).map((employee) => ({id:employee.id,name:employee.name,departmentName:employee.departmentName,teamName:employee.teamName,status:employee.status})),
+      teams:db.teams.filter((team) => visibleTeamIds(db,session).has(team.id)).map((team) => ({id:team.id,name:team.name,departmentId:team.departmentId,departmentName:db.departments.find((department) => department.id === team.departmentId)?.name || '',status:team.status}))
+    })
+  }
+  if (path === '/admin/trends' && method === 'GET') {
+    const denied = requirePermission(session,'results:view'); if (denied) return denied
+    if (session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+    const targetType = url.searchParams.get('targetType') === 'team' ? 'team' : 'employee'
+    const targetId = normalize(url.searchParams.get('targetId'))
+    if (!targetId) return ok({targetType,target:null,points:[]})
+    const target = targetType === 'team'
+      ? db.teams.find((team) => team.id === targetId && visibleTeamIds(db,session).has(team.id))
+      : scopeEmployees(db,session).find((employee) => employee.id === targetId)
+    if (!target) return fail('评价对象不存在或无权查看',403)
+    const startTime = normalize(url.searchParams.get('startTime'))
+    const endTime = normalize(url.searchParams.get('endTime'))
+    const start = startTime ? parseTime(startTime) : null
+    const end = endTime ? parseTime(endTime) : null
+    if ((startTime && !Number.isFinite(start)) || (endTime && !Number.isFinite(end)) || (start !== null && end !== null && start > end)) return fail('趋势时间范围无效')
+    const points = scopeEvaluations(db,session).filter((evaluation) => {
+      const evaluationTime = parseTime(evaluation.endTime)
+      return (start === null || evaluationTime >= start) && (end === null || evaluationTime <= end)
+    }).map((evaluation) => {
+      const scores = db.scores.filter((score) => score.evaluationCodeId === evaluation.id && itemTargetType(score,evaluation) === targetType && itemTargetId(score,evaluation) === targetId)
+      if (!scores.length) return null
+      const total = Math.round(scores.reduce((sum,score) => sum + Number(score.total),0) / scores.length * 10) / 10
+      return {
+        activityId:evaluation.id,activityName:evaluation.name,periodId:evaluation.periodId,
+        periodName:db.periods.find((period) => period.id === evaluation.periodId)?.name || '',
+        evaluationTime:evaluation.endTime,reviewCount:scores.length,total,status:activityStatus(evaluation),archived:evaluation.status === 'archived'
+      }
+    }).filter(Boolean).sort((a,b) => parseTime(a.evaluationTime) - parseTime(b.evaluationTime) || String(a.activityId).localeCompare(String(b.activityId)))
+    const targetView = targetType === 'team'
+      ? {id:target.id,name:target.name,departmentName:db.departments.find((department) => department.id === target.departmentId)?.name || '',targetType}
+      : {id:target.id,name:target.name,departmentName:target.departmentName,teamName:target.teamName,targetType}
+    return ok({targetType,target:targetView,points})
+  }
+
   if (path === '/admin/settings/score-rules' && method === 'GET') {
     if (session.role !== 'admin' && session.role !== 'team_leader') return fail('当前账号没有评分规则查看权限',403)
     const available = scopeEvaluations(db,session)

@@ -26,7 +26,8 @@ const allGroups: any[] = [
     label: '数据中心', icon: DataAnalysis,
     items: [
       { path: '/admin/dashboard', label: '数据概览', icon: DataAnalysis, permission: 'dashboard:view' },
-      { path: '/admin/results', label: '评分结果', icon: TrendCharts, permission: 'results:view', hideForMember: true }
+      { path: '/admin/results', label: '评分结果', icon: TrendCharts, permission: 'results:view', hideForMember: true },
+      { path: '/admin/trends', label: '趋势看板', icon: TrendCharts, permission: 'results:view', hideForMember: true }
     ]
   },
   {

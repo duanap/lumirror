@@ -369,6 +369,61 @@ assert.equal(teamResults.payload.data.targetType,'team')
 assert.equal(teamResults.payload.data.items.length,2)
 assert.ok(teamResults.payload.data.items.every((item) => item.targetType === 'team' && item.reviewCount === 1))
 
+async function createTrendActivity({name,targetType,targetId,totals,endOffsetDays}) {
+  const trendNow = Date.now()
+  const body = targetType === 'team'
+    ? {name,teamId:'team_rd',participantMode:'quantity',participantCount:2,targetType:'team',targetMode:'selected',targetTeamIds:[targetId],startTime:new Date(trendNow-60_000).toISOString(),endTime:new Date(trendNow+endOffsetDays*86_400_000).toISOString()}
+    : {name,teamId:'team_rd',participantMode:'quantity',participantCount:2,targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:[targetId],excludeSelf:true,startTime:new Date(trendNow-60_000).toISOString(),endTime:new Date(trendNow+endOffsetDays*86_400_000).toISOString()}
+  const activity = await call('/admin/evaluation-activities/create-flow',{method:'POST',cookie:adminCookie,body})
+  assert.equal(activity.status,200)
+  for (const [index,verify] of activity.payload.data.verifyCodes.entries()) {
+    const entry = await call('/public/verify-entry',{method:'POST',body:{evaluationCode:activity.payload.data.activity.linkCode,verifyCode:verify.code}})
+    assert.equal(entry.status,200)
+    const task = await call('/public/current-task',{token:entry.payload.token})
+    assert.equal(task.status,200)
+    const score = totals[index]
+    const submitted = await call('/public/submit-score',{method:'POST',token:entry.payload.token,body:{taskId:task.payload.data.id,scores:{ability:score,attitude:score,collaboration:score}}})
+    assert.equal(submitted.status,200)
+  }
+  return activity.payload.data.activity
+}
+
+const employeeTrendFirst = await createTrendActivity({name:'员工趋势第一期',targetType:'employee',targetId:'emp_004',totals:[80,90],endOffsetDays:5})
+const employeeTrendEnded = await call(`/admin/evaluation-codes/${employeeTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}})
+assert.equal(employeeTrendEnded.status,200)
+const employeeTrendArchived = await call(`/admin/evaluation-codes/${employeeTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{status:'archived'}})
+assert.equal(employeeTrendArchived.status,200)
+const employeeTrendSecond = await createTrendActivity({name:'员工趋势第二期',targetType:'employee',targetId:'emp_004',totals:[91,99],endOffsetDays:6})
+const employeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:adminCookie})
+assert.equal(employeeTrend.status,200)
+assert.deepEqual(employeeTrend.payload.data.points.map((point) => point.total),[85,95])
+assert.equal(employeeTrend.payload.data.points[0].archived,true)
+const employeeTrendRange = await call(`/admin/trends?targetType=employee&targetId=emp_004&startTime=${encodeURIComponent(employeeTrendSecond.endTime)}`,{cookie:adminCookie})
+assert.equal(employeeTrendRange.status,200)
+assert.deepEqual(employeeTrendRange.payload.data.points.map((point) => point.total),[95])
+const noEmployeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_005',{cookie:adminCookie})
+assert.equal(noEmployeeTrend.status,200)
+assert.deepEqual(noEmployeeTrend.payload.data.points,[])
+
+const teamTrendFirst = await createTrendActivity({name:'团队趋势第一期',targetType:'team',targetId:backendTeam.payload.data.id,totals:[80,90],endOffsetDays:5})
+const teamTrendEnded = await call(`/admin/evaluation-codes/${teamTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}})
+assert.equal(teamTrendEnded.status,200)
+const teamTrendArchived = await call(`/admin/evaluation-codes/${teamTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{status:'archived'}})
+assert.equal(teamTrendArchived.status,200)
+await createTrendActivity({name:'团队趋势第二期',targetType:'team',targetId:backendTeam.payload.data.id,totals:[91,99],endOffsetDays:6})
+const teamTrend = await call(`/admin/trends?targetType=team&targetId=${encodeURIComponent(backendTeam.payload.data.id)}`,{cookie:adminCookie})
+assert.equal(teamTrend.status,200)
+assert.deepEqual(teamTrend.payload.data.points.map((point) => point.total),[85,95])
+assert.ok(teamTrend.payload.data.points.every((point) => typeof point.reviewCount === 'number'))
+const trendOptions = await call('/admin/trends/options',{cookie:adminCookie})
+assert.equal(trendOptions.status,200)
+assert.ok(trendOptions.payload.data.employees.some((employee) => employee.id === 'emp_004'))
+assert.ok(trendOptions.payload.data.teams.some((team) => team.id === backendTeam.payload.data.id))
+const scopedTrendDenied = await call(`/admin/trends?targetType=team&targetId=${encodeURIComponent(backendTeam.payload.data.id)}`,{cookie:teamCookie})
+assert.equal(scopedTrendDenied.status,403)
+const memberTrendDenied = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:memberCookie})
+assert.equal(memberTrendDenied.status,403)
+
 const customRules = [
   {id:'quality',name:'交付质量',min:60,max:99,weight:100,operation:'add',enabled:true},
   {id:'bonus',name:'额外贡献',min:0,max:20,weight:10,operation:'add',enabled:true},
