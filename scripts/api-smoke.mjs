@@ -424,10 +424,16 @@ const timed = await call('/admin/timed-invites/generate',{
 })
 assert.equal(timed.status,200)
 assert.match(timed.payload.data.linkCode,/^\d{8}$/)
+const unusedTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+const unusedTimedRow = unusedTimedRows.payload.data.items.find((item) => item.id === timed.payload.data.id)
+assert.equal(unusedTimedRow.status,'unused')
+assert.equal(unusedTimedRow.completedTasks,0)
+assert.equal(unusedTimedRow.totalTasks,timed.payload.data.taskCount)
 const timedEntry = await call('/public/timed-entry',{method:'POST',body:{linkCode:timed.payload.data.linkCode}})
 assert.equal(timedEntry.status,200)
 assert.ok(timedEntry.payload.expiresAt)
 let timedRemaining = timedEntry.payload.remaining
+let checkedPartialTimedProgress = false
 while (timedRemaining > 0) {
   const task = await call('/public/current-task',{token:timedEntry.payload.token})
   assert.equal(task.status,200)
@@ -439,9 +445,95 @@ while (timedRemaining > 0) {
   })
   assert.equal(submit.status,200)
   timedRemaining = submit.payload.data.remaining
+  if (!checkedPartialTimedProgress && timedRemaining > 0) {
+    const partialTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+    const partialTimedRow = partialTimedRows.payload.data.items.find((item) => item.id === timed.payload.data.id)
+    assert.equal(partialTimedRow.status,'in_progress')
+    assert.equal(partialTimedRow.completedTasks,1)
+    assert.equal(partialTimedRow.remainingTasks,partialTimedRow.totalTasks-1)
+    checkedPartialTimedProgress = true
+  }
 }
+assert.ok(checkedPartialTimedProgress)
+const completedTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+const completedTimedRow = completedTimedRows.payload.data.items.find((item) => item.id === timed.payload.data.id)
+assert.equal(completedTimedRow.status,'completed')
+assert.equal(completedTimedRow.completedTasks,completedTimedRow.totalTasks)
+assert.equal(completedTimedRow.remainingTasks,0)
 const timedReuse = await call('/public/timed-entry',{method:'POST',body:{linkCode:timed.payload.data.linkCode}})
 assert.equal(timedReuse.status,404)
+
+const expiringTimed = await call('/admin/timed-invites/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id}
+})
+assert.equal(expiringTimed.status,200)
+env.TIMED_INVITE_SECONDS = '1'
+const expiringEntry = await call('/public/timed-entry',{method:'POST',body:{linkCode:expiringTimed.payload.data.linkCode}})
+assert.equal(expiringEntry.status,200)
+await new Promise((resolve) => setTimeout(resolve,1100))
+env.TIMED_INVITE_SECONDS = '300'
+const expiredTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+const expiredTimedRow = expiredTimedRows.payload.data.items.find((item) => item.id === expiringTimed.payload.data.id)
+assert.equal(expiredTimedRow.status,'expired')
+assert.equal(expiredTimedRow.completedTasks,0)
+assert.equal(expiredTimedRow.remainingTasks,expiredTimedRow.totalTasks)
+
+const archiveBaseline = {
+  results:await call(`/admin/results?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  tasks:await call(`/admin/tasks?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  verifies:await call(`/admin/verify-codes?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  timed:await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+}
+const prematureArchive = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{status:'archived'}
+})
+assert.equal(prematureArchive.status,409)
+const endActivity = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}
+})
+assert.equal(endActivity.status,200)
+assert.equal(endActivity.payload.data.status,'ended')
+const archivedActivity = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{status:'archived'}
+})
+assert.equal(archivedActivity.status,200)
+assert.equal(archivedActivity.payload.data.status,'archived')
+const archivedList = await call('/admin/evaluation-codes',{cookie:adminCookie})
+assert.equal(archivedList.payload.data.items.find((item) => item.id === created.payload.data.activity.id).status,'archived')
+const archivedSnapshot = {
+  results:await call(`/admin/results?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  tasks:await call(`/admin/tasks?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  verifies:await call(`/admin/verify-codes?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  timed:await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+}
+assert.deepEqual(archivedSnapshot.results.payload.data.items,archiveBaseline.results.payload.data.items)
+assert.equal(archivedSnapshot.tasks.payload.data.items.length,archiveBaseline.tasks.payload.data.items.length)
+assert.equal(archivedSnapshot.verifies.payload.data.items.length,archiveBaseline.verifies.payload.data.items.length)
+assert.equal(archivedSnapshot.timed.payload.data.items.length,archiveBaseline.timed.payload.data.items.length)
+const archivedGenerate = await call('/admin/verify-codes/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id,count:1}
+})
+assert.equal(archivedGenerate.status,409)
+const archivedTaskSync = await call('/admin/tasks/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id}
+})
+assert.equal(archivedTaskSync.status,409)
+const archivedRules = await call('/admin/settings/score-rules',{method:'GET',cookie:adminCookie})
+const archivedRuleWrite = await call('/admin/settings/score-rules',{
+  method:'PUT',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id,rules:archivedRules.payload.data.rules,rounding:archivedRules.payload.data.rounding}
+})
+assert.equal(archivedRuleWrite.status,409)
+const archivedUnused = archivedSnapshot.verifies.payload.data.items.find((item) => item.status === 'unused')
+assert.ok(archivedUnused)
+const archivedDeleteVerify = await call(`/admin/verify-codes/${archivedUnused.id}`,{method:'DELETE',cookie:adminCookie})
+assert.equal(archivedDeleteVerify.status,409)
+const restoredActivity = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{status:'active'}
+})
+assert.equal(restoredActivity.status,200)
+assert.equal(restoredActivity.payload.data.status,'ended')
+const restoredResults = await call(`/admin/results?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+assert.deepEqual(restoredResults.payload.data.items,archiveBaseline.results.payload.data.items)
 
 const disposable = await call('/admin/evaluation-activities/create-flow',{
   method:'POST',cookie:adminCookie,
@@ -464,14 +556,6 @@ const removed = await call('/admin/batch',{
 })
 assert.equal(removed.status,200)
 assert.equal(removed.payload.data.successCount,1)
-
-const batchStatus = await call('/admin/batch',{
-  method:'POST',cookie:adminCookie,
-  body:{resource:'evaluation-codes',action:'status',ids:[created.payload.data.activity.id],status:'archived'}
-})
-assert.equal(batchStatus.status,200)
-assert.equal(batchStatus.payload.data.successCount,1)
-assert.equal(batchStatus.payload.data.failureCount,0)
 
 const failedBatch = await call('/admin/batch',{
   method:'POST',cookie:adminCookie,
@@ -496,6 +580,8 @@ assert.equal(cleanup.status,200)
 const logs = await call('/admin/logs?limit=10',{cookie:adminCookie})
 assert.equal(logs.status,200)
 assert.ok(logs.payload.data.items.length >= 1)
+assert.ok(logs.payload.data.items.some((item) => item.action === 'evaluation.archive'))
+assert.ok(logs.payload.data.items.some((item) => item.action === 'evaluation.unarchive'))
 const badImport = await call('/admin/import/json',{method:'POST',cookie:adminCookie,body:{data:{employees:[]}}})
 assert.equal(badImport.status,400)
 assert.match(badImport.payload.message,/缺少|结构无效/)

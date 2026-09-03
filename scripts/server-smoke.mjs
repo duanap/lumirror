@@ -196,6 +196,16 @@ try {
   const results = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(results.status, 200)
   assert.equal(results.payload.data.items.reduce((total, item) => total + Number(item.reviewCount || 0), 0), 2)
+  const endedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
+    method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}
+  })
+  assert.equal(endedActivity.status,200)
+  const archivedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
+    method:'PUT',cookie:adminCookie,body:{status:'archived'}
+  })
+  assert.equal(archivedActivity.status,200)
+  const archivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
+  assert.deepEqual(archivedResults.payload.data.items,results.payload.data.items)
 
   const teamCreated = await call(running.baseUrl, '/admin/evaluation-activities/create-flow', {
     method: 'POST',
@@ -257,6 +267,15 @@ try {
   const persistedEmployees = await call(running.baseUrl, '/admin/employees', { cookie:persistedLogin.cookie })
   assert.equal(persistedEmployees.status, 200)
   assert.equal(persistedEmployees.payload.data.items.find((item) => item.id === 'emp_003').tags[0].name, '服务器标签')
+  const persistedArchivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie:persistedLogin.cookie })
+  assert.deepEqual(persistedArchivedResults.payload.data.items,results.payload.data.items)
+  const unarchivedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
+    method:'PUT',cookie:persistedLogin.cookie,body:{status:'active'}
+  })
+  assert.equal(unarchivedActivity.status,200)
+  assert.equal(unarchivedActivity.payload.data.status,'ended')
+  const unarchivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie:persistedLogin.cookie })
+  assert.deepEqual(unarchivedResults.payload.data.items,results.payload.data.items)
 
   console.log('Production relational SQLite smoke test passed: schema-v1 upgrade, rule operation column, bootstrap, restart persistence, atomic writes and concurrent scoring')
 } finally {

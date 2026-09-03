@@ -276,6 +276,27 @@ function expireTimedInvites(db) {
   }
 }
 
+function timedInviteView(db, invite) {
+  const verify = db.verifyCodes.find((item) => item.id === invite.verifyCodeId)
+  if (verify) syncVerifyProgress(db,verify)
+  const tasks = db.tasks.filter((task) => task.verifyCodeId === invite.verifyCodeId)
+  const totalTasks = tasks.length
+  const completedTasks = tasks.filter((task) => task.status === 'submitted').length
+  const remainingTasks = Math.max(0,totalTasks-completedTasks)
+  const expired = Boolean(invite.expiresAt && parseTime(invite.expiresAt) <= Date.now())
+  const status = totalTasks > 0 && completedTasks === totalTasks
+    ? 'completed'
+    : expired
+      ? 'expired'
+      : invite.firstOpenedAt
+        ? 'in_progress'
+        : 'unused'
+  return {
+    ...invite,status,statusLabel:status==='completed'?'已完成':status==='expired'?'已过期':status==='in_progress'?'评价中':'未开始',
+    totalTasks,completedTasks,remainingTasks,allCompleted:totalTasks > 0 && remainingTasks === 0
+  }
+}
+
 function migrateDatabase(db) {
   const arrays = ['users','admins','departments','teams','employees','memberTags','periods','evaluationCodes','verifyCodes','tasks','scores','timedInvites','logs']
   for (const key of arrays) if (!Array.isArray(db[key])) db[key] = []
@@ -596,6 +617,13 @@ function activityStatus(evaluation) {
   if (Number.isFinite(end) && now > end) return 'ended'
   return 'active'
 }
+function evaluationHasEnded(evaluation) {
+  const end = parseTime(evaluation?.endTime)
+  return Number.isFinite(end) && Date.now() > end
+}
+function ensureEvaluationMutable(evaluation, action = '执行该操作') {
+  if (evaluation?.status === 'archived') throw httpError(`已归档活动为只读状态，不能${action}`,409,'EVALUATION_ARCHIVED')
+}
 function enrichEmployees(db) {
   const departments = new Map(db.departments.map((x) => [x.id,x]))
   const teams = new Map(db.teams.map((x) => [x.id,x]))
@@ -657,6 +685,7 @@ function activityView(db,evaluation) {
   return {
     ...evaluation,
     status:activityStatus(evaluation),
+    lifecycleStatus:evaluation.status,
     periodName:db.periods.find((p) => p.id === evaluation.periodId)?.name || '',
     teamName:db.teams.find((t) => t.id === evaluation.teamId)?.name || '',
     participantCount:verifies.length,
@@ -861,6 +890,15 @@ function mutateEvaluationStatus(db, session, id, status) {
   if (!['active','disabled','archived'].includes(status)) throw httpError('活动状态无效')
   const evaluation = db.evaluationCodes.find((x) => x.id === id)
   if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('评价活动不存在或无权编辑',404)
+  const previousStatus = evaluation.status
+  if (status === 'archived' && previousStatus !== 'archived') {
+    if (!evaluationHasEnded(evaluation)) throw httpError('只有已经结束的评价活动可以归档',409,'EVALUATION_NOT_ENDED')
+    appendLog(db,session,'evaluation.archive',{evaluationId:evaluation.id,name:evaluation.name})
+  } else if (previousStatus === 'archived' && status !== 'active') {
+    throw httpError('已归档活动只能先恢复归档',409,'EVALUATION_ARCHIVED')
+  } else if (previousStatus === 'archived' && status === 'active') {
+    appendLog(db,session,'evaluation.unarchive',{evaluationId:evaluation.id,name:evaluation.name})
+  }
   evaluation.status = status
   evaluation.updatedAt = nowText()
 }
@@ -868,6 +906,7 @@ function mutateEvaluationStatus(db, session, id, status) {
 function deleteEvaluation(db, session, id) {
   const evaluation = db.evaluationCodes.find((x) => x.id === id)
   if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('评价活动不存在或无权删除',404)
+  ensureEvaluationMutable(evaluation,'删除')
   const verifyIds = new Set(db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id).map((x) => x.id))
   db.tasks = db.tasks.filter((x) => x.evaluationCodeId !== evaluation.id && !verifyIds.has(x.verifyCodeId))
   db.verifyCodes = db.verifyCodes.filter((x) => x.evaluationCodeId !== evaluation.id)
@@ -880,6 +919,7 @@ function deleteVerifyCode(db, session, id) {
   const verify = db.verifyCodes.find((x) => x.id === id)
   const evaluation = db.evaluationCodes.find((x) => x.id === verify?.evaluationCodeId)
   if (!verify || !canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('邀请码不存在或无权删除',404)
+  ensureEvaluationMutable(evaluation,'删除邀请码')
   if (db.tasks.some((x) => x.verifyCodeId === verify.id && x.status === 'submitted')) throw httpError('该邀请码已有提交记录，不能删除',409)
   db.tasks = db.tasks.filter((x) => x.verifyCodeId !== verify.id)
   db.timedInvites = db.timedInvites.filter((x) => x.verifyCodeId !== verify.id)
@@ -890,6 +930,7 @@ function deleteTask(db, session, id) {
   const task = db.tasks.find((x) => x.id === id)
   const evaluation = db.evaluationCodes.find((x) => x.id === task?.evaluationCodeId)
   if (!task || !canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('任务不存在或无权删除',404)
+  ensureEvaluationMutable(evaluation,'删除任务')
   if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) throw httpError('已提交任务不能删除',409)
   db.tasks = db.tasks.filter((x) => x.id !== task.id)
   const verify = db.verifyCodes.find((x) => x.id === task.verifyCodeId)
@@ -922,6 +963,10 @@ function publicSessionSeconds(context, db) {
   if (Number.isInteger(minutes) && minutes >= 5 && minutes <= 240) return minutes * 60
   const fallback = Number(getEnv(context,'PUBLIC_SESSION_SECONDS','7200'))
   return Number.isFinite(fallback) && fallback > 0 ? fallback : 7200
+}
+function timedInviteLifetimeSeconds(context) {
+  const seconds = Number(getEnv(context,'TIMED_INVITE_SECONDS','300'))
+  return Number.isFinite(seconds) && seconds >= 1 && seconds <= 3600 ? seconds : 300
 }
 
 function isPlainObject(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)) }
@@ -1162,7 +1207,7 @@ async function publicRoutes(context,path,method,db) {
     }
     if (!invite.firstOpenedAt) {
       invite.firstOpenedAt = nowText()
-      invite.expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+      invite.expiresAt = new Date(Date.now() + timedInviteLifetimeSeconds(context) * 1000).toISOString()
       invite.status = 'active'
     }
     if (parseTime(invite.expiresAt) <= Date.now()) {
@@ -1723,11 +1768,13 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === match[1])
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权编辑',404)
+    if (evaluation.status === 'archived' && !(input.status === 'active' && Object.keys(input).every((key) => key === 'status'))) return fail('已归档活动为只读状态，只能恢复归档',409,'EVALUATION_ARCHIVED')
+    if (input.status === 'archived' && Object.keys(input).some((key) => key !== 'status')) return fail('归档活动时不能同时修改其他字段',400)
     const updates = {}
     if (input.name !== undefined) updates.name = normalize(input.name) || evaluation.name
     if (input.status !== undefined) {
       if (!['active','disabled','archived'].includes(input.status)) return fail('活动状态无效')
-      updates.status = input.status
+      try { mutateEvaluationStatus(db,session,evaluation.id,input.status) } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     }
     if (input.startTime !== undefined) updates.startTime = input.startTime
     if (input.endTime !== undefined) updates.endTime = input.endTime
@@ -1767,7 +1814,7 @@ async function adminRoutes(context,path,method,db) {
           firstUsedAt:v.firstUsedAt,completedAt:v.completedAt
         }
       }),
-      activities:scopeEvaluations(db,session).map((x) => ({id:x.id,name:x.name,teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name || ''})),
+      activities:scopeEvaluations(db,session).map((x) => ({id:x.id,name:x.name,status:activityStatus(x),teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name || ''})),
       canWrite:hasPermission(session,'verify:write')
     })
   }
@@ -1776,6 +1823,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'生成邀请码') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     const participantEmployeeIds = uniqueStrings(input.participantEmployeeIds)
     const count = participantEmployeeIds.length ? 0 : Math.min(100,Math.max(1,Number(input.count)||1))
     const generated = await addVerifyCodesAndTasks(db,evaluation,{participantEmployeeIds,count})
@@ -1787,6 +1835,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'生成时效链接') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     if (activityStatus(evaluation) !== 'active') return fail('只能为进行中的评价活动生成时效链接')
     const generated = await addVerifyCodesAndTasks(db,evaluation,{count:1})
     const verifyCodeId = generated.codes[0]?.id
@@ -1799,6 +1848,22 @@ async function adminRoutes(context,path,method,db) {
     db.timedInvites.push(invite)
     await saveDatabase(context,db)
     return ok({id:invite.id,linkCode:invite.linkCode,evaluationCodeId:evaluation.id,activityName:evaluation.name,taskCount:generated.taskCount,targetCount:generated.targetCount})
+  }
+  if (path === '/admin/timed-invites' && method === 'GET') {
+    const denied = requirePermission(session,'verify:view'); if (denied) return denied
+    expireTimedInvites(db)
+    const allowedEvaluations = scopeEvaluations(db,session)
+    const allowedIds = new Set(allowedEvaluations.map((evaluation) => evaluation.id))
+    const evaluationCodeId = normalize(url.searchParams.get('evaluationCodeId'))
+    let items = db.timedInvites.filter((invite) => allowedIds.has(invite.evaluationCodeId))
+    if (evaluationCodeId) items = items.filter((invite) => invite.evaluationCodeId === evaluationCodeId)
+    return ok({
+      items:items.map((invite) => {
+        const evaluation = db.evaluationCodes.find((item) => item.id === invite.evaluationCodeId)
+        return {...timedInviteView(db,invite),activityName:evaluation?.name || '',teamName:db.teams.find((team) => team.id === evaluation?.teamId)?.name || ''}
+      }).sort((a,b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))),
+      activities:allowedEvaluations.map((evaluation) => ({id:evaluation.id,name:evaluation.name,status:activityStatus(evaluation),teamName:db.teams.find((team) => team.id === evaluation.teamId)?.name || ''}))
+    })
   }
   match = path.match(/^\/admin\/verify-codes\/([^/]+)$/)
   if (match && method === 'DELETE') {
@@ -1813,6 +1878,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'同步任务') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     const targets = getEvaluationTargets(db,evaluation)
     const verifies = db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id)
     let created = 0
@@ -1920,6 +1986,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'修改评分规则') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     evaluation.rules = prepareScoreRules(input.rules || [])
     evaluation.rounding = input.rounding || DEFAULT_ROUNDING
     evaluation.updatedAt = nowText()
