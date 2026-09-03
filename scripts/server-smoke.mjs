@@ -117,6 +117,23 @@ try {
   }
   migratedStorage.close()
 
+  const tagSchemaThreeFile = path.join(dataDir, 'schema-three-without-tags.sqlite')
+  const tagSchemaFourStorage = new RelationalSqliteStorage(tagSchemaThreeFile)
+  await tagSchemaFourStorage.put('employee_review_db_v1',{
+    version:4,createdAt:'2026-01-01T00:00:00.000Z',updatedAt:'2026-01-01T00:00:00.000Z',
+    users:[],departments:[{id:'dep_legacy',name:'旧部门',status:'active'}],teams:[{id:'team_legacy',departmentId:'dep_legacy',name:'旧团队',status:'active'}],employees:[{id:'emp_legacy',departmentId:'dep_legacy',teamId:'team_legacy',name:'旧成员',status:'active',gender:'unknown',position:'成员'}],memberTags:[],periods:[],evaluationCodes:[],verifyCodes:[],tasks:[],scores:[],timedInvites:[],logs:[],settings:{systemName:'和光镜鉴',publicSessionMinutes:120,logRetentionDays:90}
+  })
+  tagSchemaFourStorage.close()
+  const schemaThree = new DatabaseSync(tagSchemaThreeFile)
+  schemaThree.exec('PRAGMA foreign_keys = OFF; DROP TABLE employee_tags; DROP TABLE member_tags; UPDATE app_state SET schema_version = 3 WHERE singleton = 1; PRAGMA foreign_keys = ON;')
+  schemaThree.close()
+  const migratedTagStorage = new RelationalSqliteStorage(tagSchemaThreeFile)
+  const migratedTagData = await migratedTagStorage.get('employee_review_db_v1',{type:'json'})
+  assert.deepEqual(migratedTagData.employees[0].tagIds,[])
+  assert.equal(migratedTagStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version,4)
+  assert.equal(migratedTagStorage.database.prepare('PRAGMA foreign_key_check').all().length,0)
+  migratedTagStorage.close()
+
   await writeFile(path.join(dataDir, 'employee-review-db.json'), '{"legacy":true}', { mode: 0o600 })
   running = await startServer({ includeBootstrapPassword: true })
   const health = await call(running.baseUrl, '/health')

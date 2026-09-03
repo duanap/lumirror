@@ -86,18 +86,10 @@ export class RelationalSqliteStorage {
         id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id), name TEXT NOT NULL,
         status TEXT NOT NULL, sort_value INTEGER, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS member_tags (
-        id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS employees (
         id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id),
         team_id TEXT NOT NULL REFERENCES teams(id), name TEXT NOT NULL, status TEXT NOT NULL,
         payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS employee_tags (
-        employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
-        tag_id TEXT NOT NULL REFERENCES member_tags(id) ON DELETE CASCADE,
-        list_order INTEGER NOT NULL, PRIMARY KEY (employee_id, tag_id)
       );
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, role TEXT NOT NULL, status TEXT NOT NULL,
@@ -169,13 +161,13 @@ export class RelationalSqliteStorage {
       );
       CREATE INDEX IF NOT EXISTS idx_teams_department ON teams(department_id);
       CREATE INDEX IF NOT EXISTS idx_employees_team ON employees(team_id);
-      CREATE INDEX IF NOT EXISTS idx_employee_tags_tag ON employee_tags(tag_id);
       CREATE INDEX IF NOT EXISTS idx_evaluations_team ON evaluation_activities(team_id);
       CREATE INDEX IF NOT EXISTS idx_verification_evaluation ON verification_codes(evaluation_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_verification_status ON evaluation_tasks(verification_code_id, status);
       CREATE INDEX IF NOT EXISTS idx_logs_created ON audit_logs(created_at);
     `)
     this.migrateTargetSchema()
+    this.migrateMemberTagSchema()
     const ruleColumns = new Set(this.database.prepare('PRAGMA table_info(evaluation_rules)').all().map((column) => column.name))
     if (!ruleColumns.has('operation')) this.database.exec("ALTER TABLE evaluation_rules ADD COLUMN operation TEXT NOT NULL DEFAULT 'add' CHECK (operation IN ('add', 'subtract'))")
     this.database.exec(`
@@ -239,6 +231,30 @@ export class RelationalSqliteStorage {
       throw error
     } finally {
       this.database.exec('PRAGMA foreign_keys = ON')
+    }
+  }
+
+  migrateMemberTagSchema() {
+    const hasTags = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'member_tags'").get()
+    const hasLinks = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'employee_tags'").get()
+    if (hasTags && hasLinks) return
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS member_tags (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS employee_tags (
+          employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+          tag_id TEXT NOT NULL REFERENCES member_tags(id) ON DELETE CASCADE,
+          list_order INTEGER NOT NULL, PRIMARY KEY (employee_id, tag_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_employee_tags_tag ON employee_tags(tag_id);
+        COMMIT;
+      `)
+    } catch (error) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw error
     }
   }
 

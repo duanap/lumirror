@@ -16,7 +16,7 @@ async function call(path,{method='GET',token,cookie,body}={}) {
 }
 
 const health = await call('/health')
-assert.equal(health.payload.data.version,'1.4.1')
+assert.equal(health.payload.data.version,'1.5.0')
 assert.equal(health.payload.data.ready,true)
 
 const productionHealth = await onRequest({
@@ -368,6 +368,13 @@ assert.equal(teamResults.status,200)
 assert.equal(teamResults.payload.data.targetType,'team')
 assert.equal(teamResults.payload.data.items.length,2)
 assert.ok(teamResults.payload.data.items.every((item) => item.targetType === 'team' && item.reviewCount === 1))
+const singleTeamTrend = await call('/admin/trends?targetType=team&targetId=team_pm',{cookie:adminCookie})
+assert.equal(singleTeamTrend.status,200)
+assert.equal(singleTeamTrend.payload.data.points.length,1)
+const emptyTrendTeam = await call('/admin/teams',{method:'POST',cookie:adminCookie,body:{name:'空趋势团队',departmentId:'dep_rd',leader:'',sort:9,status:'active'}})
+assert.equal(emptyTrendTeam.status,200)
+const noTeamTrend = await call(`/admin/trends?targetType=team&targetId=${encodeURIComponent(emptyTrendTeam.payload.data.id)}`,{cookie:adminCookie})
+assert.deepEqual(noTeamTrend.payload.data.points,[])
 
 async function createTrendActivity({name,targetType,targetId,totals,endOffsetDays}) {
   const trendNow = Date.now()
@@ -393,6 +400,8 @@ const employeeTrendEnded = await call(`/admin/evaluation-codes/${employeeTrendFi
 assert.equal(employeeTrendEnded.status,200)
 const employeeTrendArchived = await call(`/admin/evaluation-codes/${employeeTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{status:'archived'}})
 assert.equal(employeeTrendArchived.status,200)
+const singleEmployeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:adminCookie})
+assert.deepEqual(singleEmployeeTrend.payload.data.points.map((point) => point.total),[85])
 const employeeTrendSecond = await createTrendActivity({name:'员工趋势第二期',targetType:'employee',targetId:'emp_004',totals:[91,99],endOffsetDays:6})
 const employeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:adminCookie})
 assert.equal(employeeTrend.status,200)
