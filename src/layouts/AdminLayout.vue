@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import {
   DataAnalysis, User, OfficeBuilding, Grid, Calendar, Tickets, Key, List,
   TrendCharts, Setting, UploadFilled, Fold, Expand, ArrowDown, Collection,
@@ -16,6 +17,8 @@ const router = useRouter()
 const collapsed = ref(false)
 const mobileOpen = ref(false)
 const user = ref<BackendUser | null>(getStoredUser())
+const changingPassword = ref(false)
+const passwordForm = reactive({currentPassword:'',newPassword:'',confirmPassword:''})
 const title = computed(() => String(route.meta.title || '管理后台'))
 
 const allGroups: any[] = [
@@ -69,7 +72,6 @@ async function loadMe() {
   try {
     user.value = unwrap(await api.get<BackendUser>('/admin/me'))
     storeUser(user.value)
-    if (user.value.mustChangePassword && route.path !== '/admin/settings') router.replace('/admin/settings')
   } catch {
     logout(false)
   }
@@ -83,10 +85,25 @@ async function logout(callServer = true) {
 }
 function closeMobile() { mobileOpen.value = false }
 function changeTheme(command:string) { setAdminThemeMode(command as AdminThemeMode) }
+async function changeInitialPassword() {
+  if (!passwordForm.currentPassword) return ElMessage.warning('请输入当前密码')
+  if (passwordForm.newPassword.length < 8) return ElMessage.warning('新密码至少 8 位')
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) return ElMessage.warning('两次输入的新密码不一致')
+  changingPassword.value = true
+  try {
+    await api.post('/admin/change-password',passwordForm)
+    if (user.value) {
+      user.value = {...user.value,mustChangePassword:false}
+      storeUser(user.value)
+    }
+    Object.assign(passwordForm,{currentPassword:'',newPassword:'',confirmPassword:''})
+    ElMessage.success('密码修改成功')
+    await router.replace('/admin/dashboard')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '密码修改失败')
+  } finally { changingPassword.value = false }
+}
 onMounted(loadMe)
-watch(() => route.path, (path) => {
-  if (user.value?.mustChangePassword && path !== '/admin/settings') router.replace('/admin/settings')
-})
 </script>
 
 <template>
@@ -94,7 +111,7 @@ watch(() => route.path, (path) => {
     <div class="mobile-mask" @click="closeMobile" />
     <aside>
       <div class="brand">
-        <span class="brand-mark">L</span>
+        <img class="brand-mark" src="/favicon.svg" alt="" />
         <div v-if="!collapsed" class="brand-copy">
           <strong>和光镜鉴</strong>
           <small>Lumirror</small>
@@ -133,12 +150,21 @@ watch(() => route.path, (path) => {
           </template>
         </el-dropdown>
       </header>
-      <main><router-view /></main>
+      <main><router-view v-if="!user?.mustChangePassword" /></main>
     </section>
+    <el-dialog :model-value="Boolean(user?.mustChangePassword)" title="首次登录，请修改密码" width="min(520px,92vw)" :show-close="false" :close-on-click-modal="false" :close-on-press-escape="false" :append-to-body="true">
+      <p class="password-tip">为保护账号安全，请设置新密码。修改成功后将自动进入后台首页。</p>
+      <el-form label-position="top" @submit.prevent="changeInitialPassword">
+        <el-form-item label="当前密码"><el-input v-model="passwordForm.currentPassword" type="password" show-password autocomplete="current-password"/></el-form-item>
+        <el-form-item label="新密码"><el-input v-model="passwordForm.newPassword" type="password" show-password autocomplete="new-password" placeholder="至少 8 位"/></el-form-item>
+        <el-form-item label="确认新密码"><el-input v-model="passwordForm.confirmPassword" type="password" show-password autocomplete="new-password"/></el-form-item>
+      </el-form>
+      <template #footer><el-button type="primary" :loading="changingPassword" @click="changeInitialPassword">修改密码并进入后台</el-button></template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.admin-shell{display:grid;grid-template-columns:264px minmax(0,1fr);min-height:100vh;background:var(--admin-bg);transition:grid-template-columns .2s ease,background .2s ease}.admin-shell.collapsed{grid-template-columns:82px minmax(0,1fr)}aside{position:sticky;top:0;z-index:20;height:100vh;overflow:auto;border-right:1px solid var(--line);background:var(--admin-sidebar);backdrop-filter:blur(14px)}.brand{display:flex;align-items:center;gap:12px;height:74px;padding:0 20px;border-bottom:1px solid var(--line);color:var(--brand)}.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:36px;height:36px;border-radius:10px;color:#fff;background:linear-gradient(135deg,var(--brand),var(--brand-2));font-weight:800}.brand-copy{display:grid;line-height:1.15}.brand-copy strong{color:var(--ink);font-size:17px}.brand-copy small{margin-top:3px;color:var(--muted);font-size:11px}nav{padding:12px 10px 22px}.nav-group{padding:8px 0}.nav-parent{display:flex;align-items:center;gap:10px;height:32px;padding:0 12px;color:var(--subtle);font-size:12px;font-weight:760;white-space:nowrap}.nav-parent svg{width:15px;height:15px}.nav-group a{display:flex;align-items:center;gap:12px;height:42px;margin:2px 0;padding:0 13px;border-radius:10px;color:var(--text);white-space:nowrap;transition:background .15s,color .15s,transform .15s}.nav-group a svg{width:18px;height:18px}.nav-group a:hover{color:var(--brand);background:var(--admin-hover)}.router-link-active{color:var(--brand)!important;background:var(--admin-active);box-shadow:inset 3px 0 0 var(--brand)}.collapsed nav span,.collapsed .brand-copy{display:none}.collapsed .brand{justify-content:center;padding:0}.collapsed .nav-group a,.collapsed .nav-parent{justify-content:center;padding:0}.admin-main{min-width:0}header{position:sticky;top:0;z-index:10;display:flex;align-items:center;height:74px;padding:0 30px;border-bottom:1px solid var(--line);background:var(--admin-header);backdrop-filter:blur(14px)}.collapse,.theme-toggle{display:grid;place-items:center;width:38px;height:38px;border:1px solid var(--line);border-radius:10px;background:var(--surface);cursor:pointer}.collapse{margin-right:18px}.collapse:hover,.theme-toggle:hover{color:var(--brand);box-shadow:var(--focus)}.collapse svg,.theme-toggle svg{width:19px;height:19px}.breadcrumb{color:var(--muted);font-size:14px;font-weight:650}.theme-menu{display:flex;margin-left:auto;margin-right:12px}.user-menu{display:flex}.admin-user{display:flex;align-items:center;gap:10px;cursor:pointer}.admin-user>svg{width:14px;height:14px}.avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;color:#fff;background:var(--admin-avatar);font-weight:760}.user-copy{display:grid;text-align:right}.user-copy b{color:var(--ink);font-size:14px}.user-copy small{margin-top:2px;color:var(--muted);font-size:11px}main{width:min(100%,var(--content-max));margin:0 auto;padding:28px 34px 44px}.mobile-toggle,.mobile-close,.mobile-mask{display:none}
+.admin-shell{display:grid;grid-template-columns:264px minmax(0,1fr);min-height:100vh;background:var(--admin-bg);transition:grid-template-columns .2s ease,background .2s ease}.admin-shell.collapsed{grid-template-columns:82px minmax(0,1fr)}aside{position:sticky;top:0;z-index:20;height:100vh;overflow:auto;border-right:1px solid var(--line);background:var(--admin-sidebar);backdrop-filter:blur(14px)}.brand{display:flex;align-items:center;gap:12px;height:74px;padding:0 20px;border-bottom:1px solid var(--line);color:var(--brand)}.brand-mark{display:block;flex:0 0 auto;width:36px;height:36px;filter:drop-shadow(0 6px 10px rgba(233,91,44,.16))}.brand-copy{display:grid;line-height:1.15}.brand-copy strong{color:var(--ink);font-size:17px}.brand-copy small{margin-top:3px;color:var(--muted);font-size:11px}nav{padding:12px 10px 22px}.nav-group{padding:8px 0}.nav-parent{display:flex;align-items:center;gap:10px;height:32px;padding:0 12px;color:var(--subtle);font-size:12px;font-weight:760;white-space:nowrap}.nav-parent svg{width:15px;height:15px}.nav-group a{display:flex;align-items:center;gap:12px;height:42px;margin:2px 0;padding:0 13px;border-radius:10px;color:var(--text);white-space:nowrap;transition:background .15s,color .15s,transform .15s}.nav-group a svg{width:18px;height:18px}.nav-group a:hover{color:var(--brand);background:var(--admin-hover)}.router-link-active{color:var(--brand)!important;background:var(--admin-active);box-shadow:inset 3px 0 0 var(--brand)}.collapsed nav span,.collapsed .brand-copy{display:none}.collapsed .brand{justify-content:center;padding:0}.collapsed .nav-group a,.collapsed .nav-parent{justify-content:center;padding:0}.admin-main{min-width:0}header{position:sticky;top:0;z-index:10;display:flex;align-items:center;height:74px;padding:0 30px;border-bottom:1px solid var(--line);background:var(--admin-header);backdrop-filter:blur(14px)}.collapse,.theme-toggle{display:grid;place-items:center;width:38px;height:38px;border:1px solid var(--line);border-radius:10px;background:var(--surface);cursor:pointer}.collapse{margin-right:18px}.collapse:hover,.theme-toggle:hover{color:var(--brand);box-shadow:var(--focus)}.collapse svg,.theme-toggle svg{width:19px;height:19px}.breadcrumb{color:var(--muted);font-size:14px;font-weight:650}.theme-menu{display:flex;margin-left:auto;margin-right:12px}.user-menu{display:flex}.admin-user{display:flex;align-items:center;gap:10px;cursor:pointer}.admin-user>svg{width:14px;height:14px}.avatar{display:grid;place-items:center;width:34px;height:34px;border-radius:50%;color:#fff;background:var(--admin-avatar);font-weight:760}.user-copy{display:grid;text-align:right}.user-copy b{color:var(--ink);font-size:14px}.user-copy small{margin-top:2px;color:var(--muted);font-size:11px}main{width:min(100%,var(--content-max));margin:0 auto;padding:28px 34px 44px}.password-tip{margin:0 0 20px;color:var(--muted);line-height:1.7}.mobile-toggle,.mobile-close,.mobile-mask{display:none}
 @media(max-width:960px){.admin-shell,.admin-shell.collapsed{display:block}.admin-shell aside{position:fixed;left:0;top:0;width:286px;transform:translateX(-102%);box-shadow:var(--shadow);transition:transform .22s ease}.admin-shell.mobile-open aside{transform:translateX(0)}.admin-shell aside span{display:inline}.admin-shell .nav-group a,.admin-shell .nav-parent{justify-content:flex-start;padding:0 14px}.mobile-mask{position:fixed;inset:0;z-index:15;background:var(--admin-mask)}.mobile-open .mobile-mask{display:block}.desktop-toggle{display:none}.mobile-toggle,.mobile-close{display:grid}.mobile-close{place-items:center;width:34px;height:34px;margin-left:auto;border:1px solid var(--line);border-radius:10px;color:var(--brand);background:var(--surface)}.mobile-close svg{width:18px}.breadcrumb{display:none}header{height:66px;padding:0 16px}.user-copy small{display:none}main{padding:20px 14px 36px}}
 </style>

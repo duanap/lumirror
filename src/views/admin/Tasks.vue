@@ -19,8 +19,8 @@ const taskColumns = [
   { key:'activity', label:'评价活动' },
   { key:'verifyCode', label:'邀请码' },
   { key:'participant', label:'评价成员' },
-  { key:'target', label:'被评价人' },
-  { key:'team', label:'团队' },
+  { key:'target', label:'评价对象' },
+  { key:'team', label:'归属范围' },
   { key:'status', label:'状态' },
   { key:'submittedAt', label:'提交时间' }
 ]
@@ -91,8 +91,8 @@ onMounted(load)
         <el-table-column v-if="columns.visible('activity')" prop="activityName" label="评价活动" min-width="180"/>
         <el-table-column v-if="columns.visible('verifyCode')" prop="verifyCode" label="邀请码" width="125"/>
         <el-table-column v-if="columns.visible('participant')" prop="participantName" label="评价成员" min-width="110"/>
-        <el-table-column v-if="columns.visible('target')" prop="targetName" label="被评价人" min-width="110"/>
-        <el-table-column v-if="columns.visible('team')" prop="teamName" label="团队" min-width="110"/>
+        <el-table-column v-if="columns.visible('target')" prop="targetName" label="评价对象" min-width="110"><template #default="{row}">{{row.targetName}} <el-tag size="small" type="info">{{row.targetType==='team'?'团队':'成员'}}</el-tag></template></el-table-column>
+        <el-table-column v-if="columns.visible('team')" prop="scopeName" label="归属范围" min-width="110"/>
         <el-table-column v-if="columns.visible('status')" label="状态" width="90"><template #default="{row}"><el-tag :type="row.status==='submitted'?'success':'warning'">{{row.status==='submitted'?'已提交':'待评价'}}</el-tag></template></el-table-column>
         <el-table-column v-if="columns.visible('submittedAt')" prop="submittedAt" label="提交时间" min-width="170"/>
         <el-table-column v-if="canWrite" label="操作" width="90" fixed="right"><template #default="{row}"><el-button link type="danger" :disabled="row.status==='submitted'" @click="remove(row)">删除</el-button></template></el-table-column>

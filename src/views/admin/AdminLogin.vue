@@ -18,7 +18,7 @@ async function login() {
     if (result.user) {
       localStorage.removeItem('admin_token')
       storeUser(result.user)
-      router.replace(result.user.mustChangePassword ? '/admin/settings' : '/admin/dashboard')
+      router.replace('/admin/dashboard')
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '登录失败')
@@ -29,7 +29,7 @@ async function login() {
 <template>
   <main class="login-page">
     <section class="login-card">
-      <div class="brand-lock">L</div>
+      <img class="brand-lock" src="/favicon.svg" alt="" />
       <span class="eyebrow">Lumirror Admin</span>
       <h1>和光镜鉴</h1>
       <p>匿名反馈 · 公平成长</p>
@@ -38,11 +38,11 @@ async function login() {
         <el-form-item><el-input v-model="form.password" :prefix-icon="Lock" type="password" show-password placeholder="登录密码" autocomplete="current-password"/></el-form-item>
         <el-button type="primary" native-type="submit" :loading="loading">登录后台</el-button>
       </el-form>
-      <small>首次登录后请立即修改默认密码，并妥善保管管理员账号。</small>
+      <small>如账号启用了首次改密，登录后需先设置新密码；请妥善保管后台账号。</small>
     </section>
   </main>
 </template>
 
 <style scoped>
-.login-page{display:grid;place-items:center;min-height:100vh;padding:24px;background:var(--admin-bg)}.login-card{width:min(430px,100%);padding:42px 42px 34px;border:1px solid var(--line);border-radius:18px;background:var(--panel-bg);box-shadow:var(--shadow);text-align:center}.brand-lock{display:grid;place-items:center;width:64px;height:64px;margin:0 auto 16px;border-radius:16px;color:#fff;background:linear-gradient(135deg,var(--brand),var(--brand-2));box-shadow:0 14px 28px rgba(233,91,44,.2);font-size:25px;font-weight:850}.eyebrow{color:var(--brand-dark);font-size:12px;font-weight:800;text-transform:uppercase}h1{margin:7px 0 4px;color:var(--ink);font-size:27px}p{margin:0 0 28px;color:var(--muted)}.el-button{width:100%;height:48px;font-size:16px;font-weight:760}small{display:block;margin-top:22px;color:var(--subtle);line-height:1.7}@media(max-width:480px){.login-page{padding:16px}.login-card{padding:34px 22px 28px}}
+.login-page{display:grid;place-items:center;min-height:100vh;padding:24px;background:var(--admin-bg)}.login-card{width:min(430px,100%);padding:42px 42px 34px;border:1px solid var(--line);border-radius:18px;background:var(--panel-bg);box-shadow:var(--shadow);text-align:center}.brand-lock{display:block;width:64px;height:64px;margin:0 auto 16px;filter:drop-shadow(0 14px 16px rgba(233,91,44,.2))}.eyebrow{color:var(--brand-dark);font-size:12px;font-weight:800;text-transform:uppercase}h1{margin:7px 0 4px;color:var(--ink);font-size:27px}p{margin:0 0 28px;color:var(--muted)}.el-button{width:100%;height:48px;font-size:16px;font-weight:760}small{display:block;margin-top:22px;color:var(--subtle);line-height:1.7}@media(max-width:480px){.login-page{padding:16px}.login-card{padding:34px 22px 28px}}
 </style>

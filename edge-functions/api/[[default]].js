@@ -17,6 +17,12 @@ const DEFAULT_RULES = [
   { id: 'collaboration', name: '协作能力', min: 60, max: 99, weight: 100, operation: 'add', enabled: true }
 ]
 const DEFAULT_ROUNDING = 'one_decimal'
+const AVATAR_PRESET_GENDERS = {
+  avatar_male_young_plain:'male', avatar_male_young_glasses:'male',
+  avatar_male_adult_plain:'male', avatar_male_adult_glasses:'male',
+  avatar_female_young_plain:'female', avatar_female_young_glasses:'female',
+  avatar_female_adult_plain:'female', avatar_female_adult_glasses:'female'
+}
 
 const ROLE_LABELS = {
   admin: '管理员',
@@ -38,6 +44,10 @@ const ROLE_PERMISSIONS = {
 
 function copyJson(value) { return JSON.parse(JSON.stringify(value)) }
 function normalize(value) { return String(value || '').trim() }
+function normalizeEmployeeAvatar(value, gender) {
+  const avatar = normalize(value)
+  return AVATAR_PRESET_GENDERS[avatar] === gender ? avatar : ''
+}
 function nowText() { return new Date().toISOString() }
 function randomId(prefix = 'id') {
   const bytes = new Uint8Array(8)
@@ -183,7 +193,7 @@ async function createSeedDatabase(context) {
   ]
   const salt = 'review_admin_v1'
   return {
-    version: 3,
+    version: 4,
     createdAt: now,
     users: [{
       id:'user_admin', username:'admin', displayName:'系统管理员', role:'admin',
@@ -206,7 +216,8 @@ async function createSeedDatabase(context) {
       teamId:'team_rd', departmentId:'dep_rd', status:'active',
       startTime:'2026-07-01T00:00:00+08:00', endTime:'2026-09-30T23:59:59+08:00',
       rules:copyJson(DEFAULT_RULES), rounding:DEFAULT_ROUNDING, participantMode:'selected',
-      participantEmployeeIds:['emp_001'], targetMode:'selected', targetEmployeeIds:employees.map((x) => x.id),
+      participantEmployeeIds:['emp_001'], targetType:'employee', targetMode:'selected',
+      targetEmployeeIds:employees.map((x) => x.id), targetTeamIds:[],
       excludeSelf:true, createdAt:now, updatedAt:now
     }],
     verifyCodes: [{
@@ -217,7 +228,7 @@ async function createSeedDatabase(context) {
     }],
     tasks: employees.filter((x) => x.id !== 'emp_001').map((employee,index) => ({
       id:`task_demo_${index+1}`, evaluationCodeId:evaluationId, verifyCodeId:'verify_demo', evaluatorHash,
-      targetEmployeeId:employee.id, status:'pending', submittedAt:null
+      targetType:'employee', targetId:employee.id, targetEmployeeId:employee.id, status:'pending', submittedAt:null
     })),
     scores: [],
     timedInvites: [],
@@ -291,11 +302,39 @@ function migrateDatabase(db) {
     evaluation.rounding ||= DEFAULT_ROUNDING
     evaluation.participantMode ||= 'quantity'
     evaluation.excludeSelf = Boolean(evaluation.excludeSelf)
+    evaluation.targetType = evaluation.targetType === 'team' ? 'team' : 'employee'
     const teamEmployeeIds = db.employees.filter((x) => x.teamId === evaluation.teamId && x.status === 'active').map((x) => x.id)
-    if (!Array.isArray(evaluation.targetEmployeeIds) || !evaluation.targetEmployeeIds.length) evaluation.targetEmployeeIds = teamEmployeeIds
+    if (!Array.isArray(evaluation.targetEmployeeIds)) evaluation.targetEmployeeIds = []
+    if (evaluation.targetType === 'employee' && !evaluation.targetEmployeeIds.length) evaluation.targetEmployeeIds = teamEmployeeIds
+    if (!Array.isArray(evaluation.targetTeamIds)) evaluation.targetTeamIds = []
     if (!Array.isArray(evaluation.participantEmployeeIds)) evaluation.participantEmployeeIds = []
     evaluation.targetMode ||= 'selected'
     evaluation.linkCode ||= generateUniqueLinkCode(db)
+  }
+  const evaluationById = new Map(db.evaluationCodes.map((evaluation) => [evaluation.id,evaluation]))
+  for (const task of db.tasks) {
+    const evaluation = evaluationById.get(task.evaluationCodeId)
+    task.targetType = task.targetType === 'team' || task.targetTeamId ? 'team' : evaluation?.targetType === 'team' ? 'team' : 'employee'
+    task.targetId = String(task.targetId || (task.targetType === 'team' ? task.targetTeamId : task.targetEmployeeId) || '')
+    if (task.targetType === 'team') {
+      task.targetTeamId = task.targetId
+      delete task.targetEmployeeId
+    } else {
+      task.targetEmployeeId = task.targetId
+      delete task.targetTeamId
+    }
+  }
+  for (const score of db.scores) {
+    const task = db.tasks.find((item) => item.id === score.taskId)
+    score.targetType = score.targetType === 'team' || score.targetTeamId ? 'team' : task?.targetType === 'team' ? 'team' : 'employee'
+    score.targetId = String(score.targetId || (score.targetType === 'team' ? score.targetTeamId : score.targetEmployeeId) || task?.targetId || '')
+    if (score.targetType === 'team') {
+      score.targetTeamId = score.targetId
+      delete score.targetEmployeeId
+    } else {
+      score.targetEmployeeId = score.targetId
+      delete score.targetTeamId
+    }
   }
   for (const verify of db.verifyCodes) {
     verify.codeMask = verify.code || verify.codeMask || (verify.suffix ? `****${String(verify.suffix).slice(-2)}` : '******')
@@ -309,7 +348,7 @@ function migrateDatabase(db) {
     invite.expiresAt ||= null
     invite.completedAt ||= null
   }
-  db.version = 3
+  db.version = 4
   return db
 }
 
@@ -579,7 +618,10 @@ function activityView(db,evaluation) {
   verifies.forEach((x) => syncVerifyProgress(db,x))
   const completed = verifies.filter((x) => x.status === 'completed').length
   const taskCount = db.tasks.filter((x) => x.evaluationCodeId === evaluation.id).length
-  const targetCount = Array.isArray(evaluation.targetEmployeeIds) ? evaluation.targetEmployeeIds.length : 0
+  const targetType = evaluation.targetType === 'team' ? 'team' : 'employee'
+  const targetCount = targetType === 'team'
+    ? (Array.isArray(evaluation.targetTeamIds) ? evaluation.targetTeamIds.length : 0)
+    : (Array.isArray(evaluation.targetEmployeeIds) ? evaluation.targetEmployeeIds.length : 0)
   return {
     ...evaluation,
     status:activityStatus(evaluation),
@@ -590,7 +632,7 @@ function activityView(db,evaluation) {
     pendingParticipants:Math.max(0,verifies.length-completed),
     completionRate:verifies.length ? Math.round(completed / verifies.length * 100) : 0,
     taskCount,
-    targetCount
+    targetType,targetTypeLabel:targetType === 'team' ? '团队' : '成员',targetCount
   }
 }
 function visibleTeamIds(db, session) {
@@ -618,16 +660,40 @@ function canWriteTeam(session, teamId) {
   return session.role === 'admin' || (session.role === 'team_leader' && session.teamId === teamId)
 }
 function uniqueStrings(values) { return [...new Set((Array.isArray(values) ? values : []).map(String).filter(Boolean))] }
-function getTargetEmployees(db, evaluation) {
+function evaluationTargetType(evaluation) { return evaluation?.targetType === 'team' ? 'team' : 'employee' }
+function targetReference(targetType,targetId) {
+  return targetType === 'team'
+    ? {targetType:'team',targetId,targetTeamId:targetId}
+    : {targetType:'employee',targetId,targetEmployeeId:targetId}
+}
+function itemTargetType(item,evaluation) {
+  return item?.targetType === 'team' || item?.targetTeamId ? 'team' : evaluationTargetType(evaluation)
+}
+function itemTargetId(item,evaluation) {
+  const targetType = itemTargetType(item,evaluation)
+  return String(item?.targetId || (targetType === 'team' ? item?.targetTeamId : item?.targetEmployeeId) || '')
+}
+function targetKey(targetType,targetId) { return `${targetType}:${targetId}` }
+function getEvaluationTargets(db, evaluation) {
+  if (evaluationTargetType(evaluation) === 'team') {
+    const ids = new Set(uniqueStrings(evaluation.targetTeamIds))
+    return db.teams.filter((team) => ids.has(team.id) && team.status === 'active').map((team) => ({
+      ...team,targetType:'team',targetId:team.id,targetTeamId:team.id,teamName:team.name,
+      departmentName:db.departments.find((department) => department.id === team.departmentId)?.name || '',
+      memberCount:db.employees.filter((employee) => employee.teamId === team.id && employee.status === 'active').length
+    }))
+  }
   const ids = new Set(uniqueStrings(evaluation.targetEmployeeIds))
-  return db.employees.filter((x) => ids.has(x.id) && x.status === 'active')
+  return enrichEmployees(db).filter((employee) => ids.has(employee.id) && employee.status === 'active').map((employee) => ({
+    ...employee,targetType:'employee',targetId:employee.id,targetEmployeeId:employee.id
+  }))
 }
 function getParticipantEmployees(db, evaluation) {
   const ids = new Set(uniqueStrings(evaluation.participantEmployeeIds))
   return db.employees.filter((x) => ids.has(x.id) && x.status === 'active')
 }
 async function addVerifyCodesAndTasks(db,evaluation,options = {}) {
-  const targets = getTargetEmployees(db,evaluation)
+  const targets = getEvaluationTargets(db,evaluation)
   if (!targets.length) throw new Error('评价对象不能为空')
   const participantEmployeeIds = uniqueStrings(options.participantEmployeeIds)
   const quantity = Number(options.count || 0)
@@ -644,7 +710,7 @@ async function addVerifyCodesAndTasks(db,evaluation,options = {}) {
     : Array.from({ length: quantity }, () => null)
   if (!participants.length) throw new Error('至少需要生成 1 个邀请码')
   for (const participant of participants) {
-    if (participant && evaluation.excludeSelf && targets.every((target) => target.id === participant.id)) {
+    if (participant && evaluationTargetType(evaluation) === 'employee' && evaluation.excludeSelf && targets.every((target) => target.id === participant.id)) {
       throw new Error(`${participant.name}没有可评价对象，请调整评价范围或关闭“排除自评”`)
     }
   }
@@ -656,7 +722,7 @@ async function addVerifyCodesAndTasks(db,evaluation,options = {}) {
     const codeHash = await hashVerifyCode(evaluation.id,generated.code)
     const evaluatorHash = await sha256(`evaluator:${codeHash}`)
     const participantEmployeeId = participant?.id || ''
-    const participantTargets = targets.filter((target) => !(evaluation.excludeSelf && participantEmployeeId && target.id === participantEmployeeId))
+    const participantTargets = targets.filter((target) => !(evaluationTargetType(evaluation) === 'employee' && evaluation.excludeSelf && participantEmployeeId && target.id === participantEmployeeId))
     const verify = {
       id, evaluationCodeId:evaluation.id, codeHash, codeFingerprint:generated.fingerprint,
       code:generated.code, codeMask:generated.code, suffix:generated.code.slice(-2), evaluatorHash,
@@ -667,7 +733,7 @@ async function addVerifyCodesAndTasks(db,evaluation,options = {}) {
     for (const target of participantTargets) {
       db.tasks.push({
         id:randomId('task'), evaluationCodeId:evaluation.id, verifyCodeId:id, evaluatorHash,
-        targetEmployeeId:target.id, status:'pending', submittedAt:null
+        ...targetReference(evaluationTargetType(evaluation),target.id),status:'pending', submittedAt:null
       })
       taskCount++
     }
@@ -713,10 +779,10 @@ function deleteEmployee(db, session, id) {
   const employee = db.employees.find((x) => x.id === id)
   if (!employee) throw httpError('员工不存在',404)
   if (!visibleTeamIds(db,session).has(employee.teamId)) throw httpError('无权删除该员工',403)
-  if (db.scores.some((x) => x.targetEmployeeId === employee.id)) throw httpError('该员工已有历史评分，不能删除，请改为停用',409)
+  if (db.scores.some((x) => itemTargetType(x) === 'employee' && itemTargetId(x) === employee.id)) throw httpError('该员工已有历史评分，不能删除，请改为停用',409)
   if (db.verifyCodes.some((x) => x.participantEmployeeId === employee.id && x.submitted > 0)) throw httpError('该员工已有评价提交记录，不能删除，请改为停用',409)
   db.employees = db.employees.filter((x) => x.id !== employee.id)
-  db.tasks = db.tasks.filter((x) => x.targetEmployeeId !== employee.id)
+  db.tasks = db.tasks.filter((x) => !(itemTargetType(x) === 'employee' && itemTargetId(x) === employee.id))
   db.verifyCodes.forEach((x) => syncVerifyProgress(db,x))
   db.users.forEach((x) => { if (x.employeeId === employee.id) x.employeeId = '' })
   db.evaluationCodes.forEach((x) => {
@@ -739,7 +805,7 @@ function deleteOrg(db, kind, id) {
   if (kind === 'departments') {
     if (db.teams.some((x) => x.departmentId === id) || db.employees.some((x) => x.departmentId === id) || db.users.some((x) => x.departmentId === id)) throw httpError('该部门仍被团队、成员或账号使用，不能删除',409)
   } else {
-    if (db.employees.some((x) => x.teamId === id) || db.evaluationCodes.some((x) => x.teamId === id) || db.users.some((x) => x.teamId === id)) throw httpError('该团队仍被成员、活动或账号使用，不能删除',409)
+    if (db.employees.some((x) => x.teamId === id) || db.evaluationCodes.some((x) => x.teamId === id || (x.targetTeamIds || []).includes(id)) || db.users.some((x) => x.teamId === id) || db.tasks.some((x) => itemTargetType(x) === 'team' && itemTargetId(x) === id) || db.scores.some((x) => itemTargetType(x) === 'team' && itemTargetId(x) === id)) throw httpError('该团队仍被成员、活动、评价任务、评分或账号使用，不能删除',409)
   }
   db[kind] = db[kind].filter((x) => x.id !== id)
 }
@@ -857,8 +923,14 @@ function validateImportData(data) {
   if (data.employees.some((x) => !teamIds.has(String(x.teamId)) || !departmentIds.has(String(x.departmentId)))) throw httpError('成员所属部门或团队不存在')
   if (data.evaluationCodes.some((x) => !teamIds.has(String(x.teamId)) || !departmentIds.has(String(x.departmentId)) || !periodIds.has(String(x.periodId)))) throw httpError('评价活动关联的部门、团队或周期不存在')
   if (data.verifyCodes.some((x) => !evaluationIds.has(String(x.evaluationCodeId)))) throw httpError('邀请码关联的评价活动不存在')
-  if (data.tasks.some((x) => !evaluationIds.has(String(x.evaluationCodeId)) || !verifyIds.has(String(x.verifyCodeId)) || !employeeIds.has(String(x.targetEmployeeId)))) throw httpError('评价任务关联数据不存在')
-  if (data.scores.some((x) => !evaluationIds.has(String(x.evaluationCodeId)) || !employeeIds.has(String(x.targetEmployeeId)))) throw httpError('评分结果关联数据不存在')
+  const validTarget = (item) => {
+    const targetType = item.targetType === 'team' || item.targetTeamId ? 'team' : 'employee'
+    const targetId = String(item.targetId || (targetType === 'team' ? item.targetTeamId : item.targetEmployeeId) || '')
+    return targetType === 'team' ? teamIds.has(targetId) : employeeIds.has(targetId)
+  }
+  if (data.evaluationCodes.some((x) => x.targetType === 'team' && uniqueStrings(x.targetTeamIds).some((id) => !teamIds.has(id)))) throw httpError('评价活动关联的目标团队不存在')
+  if (data.tasks.some((x) => !evaluationIds.has(String(x.evaluationCodeId)) || !verifyIds.has(String(x.verifyCodeId)) || !validTarget(x))) throw httpError('评价任务关联数据不存在')
+  if (data.scores.some((x) => !evaluationIds.has(String(x.evaluationCodeId)) || !validTarget(x))) throw httpError('评分结果关联数据不存在')
   return data
 }
 
@@ -997,6 +1069,13 @@ function performBatchMutation(db, session, currentUser, input) {
 }
 
 async function publicRoutes(context,path,method,db) {
+  if (path === '/public/evaluation-title' && method === 'POST') {
+    const input = await bodyJson(context.request)
+    const linkCode = normalize(input.linkCode).toUpperCase()
+    const evaluation = db.evaluationCodes.find((x) => String(x.linkCode || '').toUpperCase() === linkCode)
+    if (!evaluation || activityStatus(evaluation) !== 'active') return fail('评价不存在或已结束',404,'NOT_FOUND')
+    return json({success:true,data:{name:evaluation.name}})
+  }
   if (path === '/public/verify-entry' && method === 'POST') {
     const input = await bodyJson(context.request)
     const code = normalize(input.evaluationCode).toUpperCase()
@@ -1094,10 +1173,14 @@ async function publicRoutes(context,path,method,db) {
   if (path === '/public/current-task' && method === 'GET') {
     const task = db.tasks.find((x) => x.verifyCodeId === verify.id && x.status === 'pending')
     if (!task) return fail(verify.remaining === 0 ? '该邀请码已完成全部评价' : '没有待评价任务',404)
-    const target = enrichEmployees(db).find((x) => x.id === task.targetEmployeeId)
+    const targetType = itemTargetType(task,evaluation)
+    const targetId = itemTargetId(task,evaluation)
+    const target = targetType === 'team'
+      ? getEvaluationTargets(db,evaluation).find((item) => item.id === targetId)
+      : enrichEmployees(db).find((item) => item.id === targetId)
     if (!target) return fail('评价对象不存在，请联系管理员修复任务',409)
     return ok({
-      id:task.id, target,
+      id:task.id, target:{...target,targetType},targetType,
       evaluation:{id:evaluation.id,name:evaluation.name,teamName:db.teams.find((x) => x.id === evaluation.teamId)?.name || ''},
       rules:evaluation.rules, rounding:evaluation.rounding, remaining:verify.remaining,
       timed:Boolean(timedInvite), expiresAt:timedInvite?.expiresAt || null
@@ -1108,7 +1191,7 @@ async function publicRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const task = db.tasks.find((x) => x.id === input.taskId && x.verifyCodeId === verify.id && x.evaluationCodeId === evaluation.id)
     if (!task) return fail('评价任务不存在',404)
-    if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) return fail('该员工已评价，不能重复提交',409)
+    if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409)
     const values = input.scores || {}
     for (const rule of evaluation.rules.filter((x) => x.enabled)) {
       const value = Number(values[rule.id])
@@ -1117,11 +1200,11 @@ async function publicRoutes(context,path,method,db) {
     const total = computeTotal(values,evaluation.rules,evaluation.rounding)
     if (total === null) return fail('评分数据无效')
     const scoreId = `score_${await sha256(`${verify.id}:${task.id}`)}`
-    if (db.scores.some((x) => x.id === scoreId || x.taskId === task.id)) return fail('该员工已评价，不能重复提交',409)
+    if (db.scores.some((x) => x.id === scoreId || x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409)
     const anonymousToken = await sha256(`${verify.evaluatorHash}:${task.id}`)
     db.scores.push({
       id:scoreId, evaluationCodeId:evaluation.id, taskId:task.id,
-      targetEmployeeId:task.targetEmployeeId, anonymousToken, values:copyJson(values), total, createdAt:nowText()
+      ...targetReference(itemTargetType(task,evaluation),itemTargetId(task,evaluation)),anonymousToken, values:copyJson(values), total, createdAt:nowText()
     })
     task.status = 'submitted'
     task.submittedAt = nowText()
@@ -1214,7 +1297,7 @@ async function adminRoutes(context,path,method,db) {
       ...scope,status:input.status === 'inactive' ? 'inactive' : 'active',
       createdAt:nowText(),updatedAt:nowText()
     }
-    await setUserPassword(item,password,{forceChange:true})
+    await setUserPassword(item,password,{forceChange:input.mustChangePassword !== false})
     db.users.push(item)
     appendLog(db,session,'user.create',{targetUserId:item.id,role:item.role})
     await saveDatabase(context,db)
@@ -1341,6 +1424,8 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    input.gender = ['male','female','unknown'].includes(input.gender) ? input.gender : current.gender
+    input.avatar = normalizeEmployeeAvatar(input.avatar,input.gender)
     db.employees[index] = {...current,...input,id:current.id,updatedAt:nowText()}
     delete db.employees[index].employeeNo
     delete db.employees[index].phone
@@ -1362,8 +1447,9 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    const gender = ['male','female','unknown'].includes(input.gender) ? input.gender : 'unknown'
     const employee = {
-      ...input,id:randomId('emp'),gender:['male','female','unknown'].includes(input.gender)?input.gender:'unknown',
+      ...input,id:randomId('emp'),gender,avatar:normalizeEmployeeAvatar(input.avatar,gender),
       status:input.status === 'inactive' ? 'inactive' : 'active',createdAt:nowText(),updatedAt:nowText()
     }
     db.employees.push(employee)
@@ -1465,11 +1551,17 @@ async function adminRoutes(context,path,method,db) {
 
     const teamEmployees = db.employees.filter((x) => x.teamId === team.id && x.status === 'active')
     const teamEmployeeIdSet = new Set(teamEmployees.map((x) => x.id))
+    const targetType = input.targetType === 'team' ? 'team' : 'employee'
     const targetMode = input.targetMode === 'selected' ? 'selected' : 'all'
-    const targetEmployeeIds = targetMode === 'selected'
-      ? uniqueStrings(input.targetEmployeeIds).filter((id) => teamEmployeeIdSet.has(id))
-      : teamEmployees.map((x) => x.id)
-    if (!targetEmployeeIds.length) return fail('至少选择 1 名评价对象')
+    const availableTargetTeams = db.teams.filter((item) => visibleTeamIds(db,session).has(item.id) && item.status === 'active')
+    const availableTargetTeamIds = new Set(availableTargetTeams.map((item) => item.id))
+    const targetEmployeeIds = targetType === 'employee'
+      ? (targetMode === 'selected' ? uniqueStrings(input.targetEmployeeIds).filter((id) => teamEmployeeIdSet.has(id)) : teamEmployees.map((x) => x.id))
+      : []
+    const targetTeamIds = targetType === 'team'
+      ? (targetMode === 'selected' ? uniqueStrings(input.targetTeamIds).filter((id) => availableTargetTeamIds.has(id)) : availableTargetTeams.map((item) => item.id))
+      : []
+    if (!(targetType === 'team' ? targetTeamIds : targetEmployeeIds).length) return fail('至少选择 1 个评价对象')
 
     const participantMode = input.participantMode === 'selected' ? 'selected' : 'quantity'
     const participantEmployeeIds = participantMode === 'selected'
@@ -1495,7 +1587,8 @@ async function adminRoutes(context,path,method,db) {
       linkCode:generateUniqueLinkCode(db),
       teamId:team.id,departmentId:team.departmentId,status:'active',startTime:input.startTime,endTime:input.endTime,
       rules:prepareScoreRules(Array.isArray(input.rules)&&input.rules.length?input.rules:DEFAULT_RULES),rounding:input.rounding||DEFAULT_ROUNDING,
-      participantMode,participantEmployeeIds,targetMode,targetEmployeeIds,excludeSelf:input.excludeSelf !== false,
+      participantMode,participantEmployeeIds,targetType,targetMode,targetEmployeeIds,targetTeamIds,
+      excludeSelf:targetType === 'employee' && input.excludeSelf !== false,
       createdAt:nowText(),updatedAt:nowText()
     }
     db.evaluationCodes.push(evaluation)
@@ -1598,22 +1691,25 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
-    const targets = getTargetEmployees(db,evaluation)
+    const targets = getEvaluationTargets(db,evaluation)
     const verifies = db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id)
     let created = 0
     let removed = 0
     for (const verify of verifies) {
-      const desiredIds = new Set(targets.filter((target) => !(evaluation.excludeSelf && verify.participantEmployeeId && target.id === verify.participantEmployeeId)).map((x) => x.id))
+      const targetType = evaluationTargetType(evaluation)
+      const desiredTargets = targets.filter((target) => !(targetType === 'employee' && evaluation.excludeSelf && verify.participantEmployeeId && target.id === verify.participantEmployeeId))
+      const desiredKeys = new Set(desiredTargets.map((target) => targetKey(targetType,target.id)))
       const existing = db.tasks.filter((x) => x.verifyCodeId === verify.id)
       for (const task of existing) {
-        if (!desiredIds.has(task.targetEmployeeId) && task.status !== 'submitted') {
+        if (!desiredKeys.has(targetKey(itemTargetType(task,evaluation),itemTargetId(task,evaluation))) && task.status !== 'submitted') {
           db.tasks = db.tasks.filter((x) => x.id !== task.id)
           removed++
         }
       }
-      for (const targetId of desiredIds) {
-        if (!db.tasks.some((x) => x.verifyCodeId === verify.id && x.targetEmployeeId === targetId)) {
-          db.tasks.push({id:randomId('task'),evaluationCodeId:evaluation.id,verifyCodeId:verify.id,evaluatorHash:verify.evaluatorHash,targetEmployeeId:targetId,status:'pending',submittedAt:null})
+      for (const target of desiredTargets) {
+        const key = targetKey(targetType,target.id)
+        if (!db.tasks.some((x) => x.verifyCodeId === verify.id && targetKey(itemTargetType(x,evaluation),itemTargetId(x,evaluation)) === key)) {
+          db.tasks.push({id:randomId('task'),evaluationCodeId:evaluation.id,verifyCodeId:verify.id,evaluatorHash:verify.evaluatorHash,...targetReference(targetType,target.id),status:'pending',submittedAt:null})
           created++
         }
       }
@@ -1633,9 +1729,13 @@ async function adminRoutes(context,path,method,db) {
       items:items.map((t) => {
         const e = db.evaluationCodes.find((x) => x.id === t.evaluationCodeId)
         const v = db.verifyCodes.find((x) => x.id === t.verifyCodeId)
-        const target = employees.find((x) => x.id === t.targetEmployeeId)
+        const targetType = itemTargetType(t,e)
+        const targetId = itemTargetId(t,e)
+        const target = targetType === 'team'
+          ? getEvaluationTargets(db,e).find((item) => item.id === targetId) || db.teams.find((item) => item.id === targetId)
+          : employees.find((item) => item.id === targetId)
         const participant = employees.find((x) => x.id === v?.participantEmployeeId)
-        return {...t,evaluatorHash:undefined,activityName:e?.name,verifyCode:v?.code||v?.codeMask||`****${v?.suffix||''}`,participantName:participant?.name||'未绑定成员',targetName:target?.name,teamName:target?.teamName}
+        return {...t,targetType,targetId,evaluatorHash:undefined,activityName:e?.name,verifyCode:v?.code||v?.codeMask||`****${v?.suffix||''}`,participantName:participant?.name||'未绑定成员',targetName:target?.name,teamName:targetType === 'team' ? target?.name : target?.teamName,scopeName:targetType === 'team' ? target?.departmentName : target?.teamName}
       }),
       activities:scopeEvaluations(db,session).map((x) => ({id:x.id,name:x.name,teamName:db.teams.find((t) => t.id===x.teamId)?.name || ''})),
       canWrite:hasPermission(session,'tasks:write')
@@ -1658,24 +1758,26 @@ async function adminRoutes(context,path,method,db) {
     if (!evaluation) return ok({items:[],rules:[],activities:[]})
     const rules = evaluation.rules || DEFAULT_RULES
     const scoresForActivity = db.scores.filter((s) => s.evaluationCodeId === evaluation.id)
-    const targetIds = new Set(evaluation.targetEmployeeIds || [])
-    const employees = enrichEmployees(db).filter((x) => targetIds.has(x.id))
-    const items = employees.map((employee) => {
-      const scores = scoresForActivity.filter((s) => s.targetEmployeeId === employee.id)
+    const targetType = evaluationTargetType(evaluation)
+    const targets = getEvaluationTargets(db,evaluation)
+    const items = targets.map((target) => {
+      const scores = scoresForActivity.filter((score) => itemTargetType(score,evaluation) === targetType && itemTargetId(score,evaluation) === target.id)
       const average = (id) => {
         const values = scores.map((score) => Number(score.values?.[id])).filter(Number.isFinite)
         return values.length ? Math.round(values.reduce((sum,value) => sum + value,0) / values.length * 10) / 10 : '--'
       }
       const total = scores.length ? Math.round(scores.reduce((a,s) => a + Number(s.total),0) / scores.length * 10) / 10 : '--'
       return {
-        id:employee.id,name:employee.name,genderLabel:employee.gender==='female'?'女':employee.gender==='male'?'男':'未知',
-        departmentName:employee.departmentName,teamName:employee.teamName,position:employee.position,reviewCount:scores.length,
+        id:target.id,targetType,name:target.name,
+        genderLabel:targetType === 'employee' ? (target.gender==='female'?'女':target.gender==='male'?'男':'未知') : '',
+        departmentName:target.departmentName,teamName:target.teamName,position:targetType === 'employee' ? target.position : '',
+        memberCount:targetType === 'team' ? target.memberCount : undefined,reviewCount:scores.length,
         values:Object.fromEntries(rules.filter((rule) => rule.enabled).map((rule) => [rule.id,average(rule.id)])),total
       }
     }).sort((a,b) => Number(b.total==='--'?-1:b.total)-Number(a.total==='--'?-1:a.total)).map((x,i) => ({...x,rank:x.total==='--'?'--':i+1}))
     return ok({
-      items,rules,activity:activityView(db,evaluation),
-      activities:available.map((x) => ({id:x.id,name:x.name,code:x.code,teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name||''}))
+      items,rules,targetType,activity:activityView(db,evaluation),
+      activities:available.map((x) => ({id:x.id,name:x.name,code:x.code,targetType:evaluationTargetType(x),teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name||''}))
     })
   }
 
@@ -1762,7 +1864,7 @@ export default async function onRequest(context) {
   const csrfDenied = requireAdminRequestHeader(context.request,path,method)
   if (csrfDenied) return withCors(csrfDenied, context)
   if (path === '/admin/login' && method === 'POST' && rateLimited(context.request,'admin-login',20,5 * 60 * 1000)) return withCors(fail('登录尝试过于频繁，请稍后再试',429,'RATE_LIMITED'), context)
-  if ((path === '/public/verify-entry' || path === '/public/timed-entry') && method === 'POST' && rateLimited(context.request,'public-entry',40,5 * 60 * 1000)) return withCors(fail('操作过于频繁，请稍后再试',429,'RATE_LIMITED'), context)
+  if ((path === '/public/evaluation-title' || path === '/public/verify-entry' || path === '/public/timed-entry') && method === 'POST' && rateLimited(context.request,'public-entry',40,5 * 60 * 1000)) return withCors(fail('操作过于频繁，请稍后再试',429,'RATE_LIMITED'), context)
   if (path === '/health' && method === 'GET') {
     const appEnv = getEnv(context,'APP_ENV','development')
     const production = appEnv === 'production'

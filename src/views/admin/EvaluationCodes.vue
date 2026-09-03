@@ -22,7 +22,7 @@ const result = ref<any>(null)
 const selectedRows = ref<any[]>([])
 const form = reactive<any>({
   name:'',teamId:'',participantMode:'selected',participantEmployeeIds:[],participantCount:5,
-  targetMode:'all',targetEmployeeIds:[],excludeSelf:true,periodId:'',periodName:'',
+  targetType:'employee',targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
   periodMode:'new',
   startTime:new Date(),endTime:new Date(Date.now()+30*24*60*60*1000),rounding:'one_decimal'
 })
@@ -30,14 +30,17 @@ const form = reactive<any>({
 const selectedTeam = computed(() => teams.value.find((x) => x.id === form.teamId))
 const teamEmployees = computed(() => employees.value.filter((x) => x.teamId === form.teamId && x.status === 'active'))
 const participantCount = computed(() => form.participantMode === 'selected' ? form.participantEmployeeIds.length : Number(form.participantCount || 0))
-const targetCount = computed(() => form.targetMode === 'selected' ? form.targetEmployeeIds.length : teamEmployees.value.length)
+const targetCount = computed(() => {
+  if (form.targetType === 'team') return form.targetMode === 'selected' ? form.targetTeamIds.length : teams.value.length
+  return form.targetMode === 'selected' ? form.targetEmployeeIds.length : teamEmployees.value.length
+})
 const selectedCount = computed(() => selectedRows.value.length)
 const selectedPeriod = computed(() => periods.value.find((period) => period.id === form.periodId))
 const periodLabel = computed(() => form.periodMode === 'existing' ? selectedPeriod.value?.name || '未选择' : form.periodName || `${form.name || '新评价活动'}周期`)
 const activityColumns = [
   { key:'link', label:'邀请链接' },
   { key:'period', label:'评价周期' },
-  { key:'team', label:'评价团队' },
+  { key:'team', label:'参与团队' },
   { key:'participants', label:'邀请码数' },
   { key:'targets', label:'评价对象' },
   { key:'tasks', label:'任务总数' },
@@ -48,7 +51,7 @@ const columns = useColumnSettings('lumirror.admin.activities.columns.v2', activi
 const visibleColumns = columns.selected
 const selectableColumns = columns.selectable
 const estimatedTaskCount = computed(() => {
-  if (form.participantMode !== 'selected' || !form.excludeSelf) return participantCount.value * targetCount.value
+  if (form.targetType === 'team' || form.participantMode !== 'selected' || !form.excludeSelf) return participantCount.value * targetCount.value
   const targetSet = new Set(form.targetMode === 'selected' ? form.targetEmployeeIds : teamEmployees.value.map((x:any) => x.id))
   const selfExcluded = form.participantEmployeeIds.filter((id:string) => targetSet.has(id)).length
   return participantCount.value * targetCount.value - selfExcluded
@@ -70,12 +73,13 @@ async function load() {
 function resetSelections() {
   form.participantEmployeeIds = []
   form.targetEmployeeIds = []
+  form.targetTeamIds = []
 }
 function openCreate() {
   const firstTeam = teams.value[0]?.id || ''
   Object.assign(form,{
     name:'',teamId:firstTeam,participantMode:'selected',participantEmployeeIds:[],participantCount:5,
-    targetMode:'all',targetEmployeeIds:[],excludeSelf:true,periodId:'',periodName:'',
+    targetType:'employee',targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
     periodMode:'new',
     startTime:new Date(),endTime:new Date(Date.now()+30*24*60*60*1000),rounding:'one_decimal'
   })
@@ -84,13 +88,16 @@ function openCreate() {
   dialog.value = true
 }
 function selectAllParticipants() { form.participantEmployeeIds = teamEmployees.value.map((x:any) => x.id) }
-function selectAllTargets() { form.targetEmployeeIds = teamEmployees.value.map((x:any) => x.id) }
+function selectAllTargets() {
+  if (form.targetType === 'team') form.targetTeamIds = teams.value.map((x:any) => x.id)
+  else form.targetEmployeeIds = teamEmployees.value.map((x:any) => x.id)
+}
 function next() {
   if (!form.name.trim()) return ElMessage.warning('请输入评价活动名称')
   if (!form.teamId) return ElMessage.warning('请选择评价团队')
   if (form.participantMode === 'selected' && !form.participantEmployeeIds.length) return ElMessage.warning('请选择至少 1 名参与评价成员')
   if (form.participantMode === 'quantity' && (!Number.isInteger(form.participantCount) || form.participantCount < 1 || form.participantCount > 200)) return ElMessage.warning('邀请码数量必须为 1-200 的整数')
-  if (form.targetMode === 'selected' && !form.targetEmployeeIds.length) return ElMessage.warning('请选择至少 1 名评价对象')
+  if (form.targetMode === 'selected' && !(form.targetType === 'team' ? form.targetTeamIds : form.targetEmployeeIds).length) return ElMessage.warning('请选择至少 1 个评价对象')
   if (form.periodMode === 'existing' && !selectedPeriod.value) return ElMessage.warning('请选择评价周期')
   if (form.periodMode === 'new' && !form.periodName.trim()) return ElMessage.warning('请输入新评价周期名称')
   if (!form.startTime || !form.endTime || new Date(form.startTime) >= new Date(form.endTime)) return ElMessage.warning('请设置正确的开始和结束时间')
@@ -185,6 +192,11 @@ function manageTasks(row:any) { router.push(`/admin/tasks?evaluationCodeId=${enc
 function statusText(status:string) { return ({active:'进行中',upcoming:'未开始',ended:'已结束',disabled:'已停用',archived:'已归档'} as any)[status] || status }
 function statusType(status:string) { return status==='active'?'success':status==='upcoming'?'warning':status==='ended'?'info':'danger' }
 watch(() => form.teamId,resetSelections)
+watch(() => form.targetType,() => {
+  form.targetEmployeeIds = []
+  form.targetTeamIds = []
+  if (form.targetType === 'team') form.excludeSelf = false
+})
 onMounted(load)
 </script>
 
@@ -206,9 +218,9 @@ onMounted(load)
         <el-table-column prop="name" label="评价活动" min-width="210"/>
         <el-table-column v-if="columns.visible('link')" label="邀请链接" min-width="220"><template #default="{row}"><span class="link-text">{{ inviteLink(row.linkCode) }}</span></template></el-table-column>
         <el-table-column v-if="columns.visible('period')" prop="periodName" label="评价周期" min-width="150"/>
-        <el-table-column v-if="columns.visible('team')" prop="teamName" label="评价团队" min-width="120"/>
+        <el-table-column v-if="columns.visible('team')" prop="teamName" label="参与团队" min-width="120"/>
         <el-table-column v-if="columns.visible('participants')" prop="participantCount" label="邀请码数" width="95"/>
-        <el-table-column v-if="columns.visible('targets')" prop="targetCount" label="评价对象" width="95"/>
+        <el-table-column v-if="columns.visible('targets')" label="评价对象" width="120"><template #default="{row}">{{row.targetTypeLabel}} · {{row.targetCount}}</template></el-table-column>
         <el-table-column v-if="columns.visible('tasks')" prop="taskCount" label="任务总数" width="95"/>
         <el-table-column v-if="columns.visible('completion')" label="完成率" width="145"><template #default="{row}"><el-progress :percentage="row.completionRate" :stroke-width="8"/></template></el-table-column>
         <el-table-column v-if="columns.visible('status')" label="状态" width="95"><template #default="{row}"><el-tag :type="statusType(row.status)">{{statusText(row.status)}}</el-tag></template></el-table-column>
@@ -216,14 +228,14 @@ onMounted(load)
       </el-table>
     </div>
 
-    <el-dialog v-model="dialog" title="创建评价活动" width="min(880px,96vw)" :close-on-click-modal="false">
+    <el-dialog v-model="dialog" title="创建评价活动" width="min(880px,96vw)" top="2vh" style="max-height:96vh;overflow:auto" :close-on-click-modal="false">
       <el-steps :active="step" finish-status="success" align-center class="steps"><el-step title="活动与人员"/><el-step title="确认生成"/><el-step title="分发邀请码"/></el-steps>
 
       <section v-if="step===0" class="step-body">
         <el-form label-position="top">
           <div class="form-grid">
             <el-form-item label="评价活动名称"><el-input v-model="form.name" placeholder="例如：研发团队季度匿名反馈" maxlength="40"/></el-form-item>
-            <el-form-item label="评价团队"><el-select v-model="form.teamId" style="width:100%"><el-option v-for="team in teams" :key="team.id" :label="team.name" :value="team.id"/></el-select></el-form-item>
+            <el-form-item label="参与团队"><el-select v-model="form.teamId" style="width:100%"><el-option v-for="team in teams" :key="team.id" :label="team.name" :value="team.id"/></el-select><small>参与评价的成员从这个团队中选择</small></el-form-item>
             <el-form-item label="邀请码生成方式" class="full"><el-radio-group v-model="form.participantMode"><el-radio-button value="selected">按成员名单生成</el-radio-button><el-radio-button value="quantity">仅指定数量</el-radio-button></el-radio-group></el-form-item>
             <el-form-item v-if="form.participantMode==='selected'" label="参与评价成员" class="full">
               <div class="select-head"><small>选中的每位成员会绑定一个匿名唯一邀请码</small><el-button link type="primary" @click="selectAllParticipants">选择全部</el-button></div>
@@ -231,12 +243,14 @@ onMounted(load)
             </el-form-item>
             <el-form-item v-else label="邀请码数量"><el-input-number v-model="form.participantCount" :min="1" :max="200"/><small>不与团队成员总数绑定，可自由设置</small></el-form-item>
 
-            <el-form-item label="评价对象范围" class="full"><el-radio-group v-model="form.targetMode"><el-radio-button value="all">团队全部启用成员</el-radio-button><el-radio-button value="selected">指定成员</el-radio-button></el-radio-group></el-form-item>
+            <el-form-item label="评价对象类型" class="full"><el-radio-group v-model="form.targetType"><el-radio-button value="employee">给成员评分</el-radio-button><el-radio-button value="team">给团队评分</el-radio-button></el-radio-group><small>{{form.targetType==='team'?'每条评分直接计入所选团队，不会按团队成员分数换算':'每条评分计入一名具体成员'}}</small></el-form-item>
+            <el-form-item label="评价对象范围" class="full"><el-radio-group v-model="form.targetMode"><el-radio-button value="all">{{form.targetType==='team'?'全部可管理团队':'参与团队全部启用成员'}}</el-radio-button><el-radio-button value="selected">{{form.targetType==='team'?'指定团队':'指定成员'}}</el-radio-button></el-radio-group></el-form-item>
             <el-form-item v-if="form.targetMode==='selected'" label="选择评价对象" class="full">
               <div class="select-head"><small>评价对象与邀请码数量互相独立</small><el-button link type="primary" @click="selectAllTargets">选择全部</el-button></div>
-              <el-select v-model="form.targetEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择评价对象"><el-option v-for="item in teamEmployees" :key="item.id" :label="`${item.name} · ${item.position}`" :value="item.id"/></el-select>
+              <el-select v-if="form.targetType==='team'" v-model="form.targetTeamIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择目标团队"><el-option v-for="item in teams" :key="item.id" :label="item.name" :value="item.id"/></el-select>
+              <el-select v-else v-model="form.targetEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择评价对象"><el-option v-for="item in teamEmployees" :key="item.id" :label="`${item.name} · ${item.position}`" :value="item.id"/></el-select>
             </el-form-item>
-            <el-form-item label="排除自评"><el-switch v-model="form.excludeSelf"/><small>按成员名单生成时，自动移除评价本人任务</small></el-form-item>
+            <el-form-item v-if="form.targetType==='employee'" label="排除自评"><el-switch v-model="form.excludeSelf"/><small>按成员名单生成时，自动移除评价本人任务</small></el-form-item>
             <el-form-item label="评价周期" class="full"><el-radio-group v-model="form.periodMode"><el-radio-button value="new">同步新建周期</el-radio-button><el-radio-button value="existing">选择已有周期</el-radio-button></el-radio-group></el-form-item>
             <el-form-item v-if="form.periodMode==='new'" label="新周期名称" class="full"><el-input v-model="form.periodName" placeholder="例如：2026年第四季度" maxlength="40"/><small>新周期与本次评价活动使用相同的开始和结束时间</small></el-form-item>
             <el-form-item v-else label="选择评价周期" class="full"><el-select v-model="form.periodId" style="width:100%" placeholder="请选择已有评价周期"><el-option v-for="period in periods" :key="period.id" :label="`${period.name} · ${period.startTime} 至 ${period.endTime}`" :value="period.id"/></el-select><small>评价活动的开始和结束时间必须处于所选周期内</small></el-form-item>
@@ -251,10 +265,10 @@ onMounted(load)
         <div class="summary-grid">
           <div><span>评价活动</span><b>{{form.name}}</b></div>
           <div><span>评价周期</span><b>{{periodLabel}}</b></div>
-          <div><span>评价团队</span><b>{{selectedTeam?.name}}</b></div>
+          <div><span>参与团队</span><b>{{selectedTeam?.name}}</b></div>
           <div><span>邀请链接</span><b>自动生成短链</b></div>
           <div><span>邀请码</span><b>{{participantCount}} 个 6 位数字</b></div>
-          <div><span>评价对象</span><b>{{targetCount}} 人</b></div>
+          <div><span>评价对象</span><b>{{targetCount}} {{form.targetType==='team'?'个团队':'人'}}</b></div>
           <div><span>预计任务</span><b>{{estimatedTaskCount}} 条</b></div>
         </div>
         <el-alert type="warning" :closable="false" show-icon title="完整邀请码仅在创建完成后展示一次，请立即下载并分别分发。"/>
@@ -265,7 +279,7 @@ onMounted(load)
         <div class="result-summary">
           <div><span>邀请链接</span><b>{{result ? inviteLink(result.activity.linkCode) : ''}}</b><el-button link type="primary" :icon="CopyDocument" @click="copy(inviteLink(result.activity.linkCode),'邀请链接')">复制</el-button></div>
           <div><span>邀请码</span><b>{{result?.participantCount}} 个</b></div>
-          <div><span>评价对象</span><b>{{result?.targetCount}} 人</b></div>
+          <div><span>评价对象</span><b>{{result?.targetCount}} {{result?.activity?.targetType==='team'?'个团队':'人'}}</b></div>
           <div><span>任务总数</span><b>{{result?.taskCount}} 条</b></div>
         </div>
         <div class="codes-box">
