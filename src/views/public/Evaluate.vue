@@ -7,7 +7,7 @@ import PublicShell from '../../layouts/PublicShell.vue'
 import IconGlyph from '../../components/IconGlyph.vue'
 import EmployeeAvatar from '../../components/EmployeeAvatar.vue'
 import { api, unwrap } from '../../lib/api'
-import { calculateScore } from '../../lib/score'
+import { calculateScore, ruleFormula } from '../../lib/score'
 import type { EvaluationTask, ScoreRule } from '../../types'
 
 const router = useRouter()
@@ -20,6 +20,13 @@ let timer: ReturnType<typeof setInterval> | undefined
 
 const total = computed(() => task.value ? calculateScore(scores,task.value.rules,task.value.rounding) : null)
 const enabledRules = computed(() => task.value?.rules.filter((item) => item.enabled) || [])
+const formula = computed(() => {
+  if (!task.value) return ''
+  const description = ruleFormula(task.value.rules)
+  return description.startsWith('等权平均：')
+    ? `综合总分=${description.slice('等权平均：'.length)}`
+    : `综合总分=${description}`
+})
 const expiresAtMs = computed(() => task.value?.expiresAt ? new Date(task.value.expiresAt).getTime() : null)
 const timeLeftSeconds = computed(() => expiresAtMs.value ? Math.max(0,Math.ceil((expiresAtMs.value - now.value) / 1000)) : null)
 const timeLeftLabel = computed(() => {
@@ -165,7 +172,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
       </section>
 
       <section class="rule-card" aria-label="本次计分方式">
-        综合总分=(工作能力 + 工作态度 + 协作能力) / 3
+        {{ formula }}
       </section>
 
       <button class="submit-btn" :disabled="submitting||total===null||timedExpired" @click="submit">
