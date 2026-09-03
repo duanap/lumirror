@@ -11,6 +11,7 @@ import { useColumnSettings } from '../../lib/columns'
 
 const rows = ref<any[]>([])
 const router = useRouter()
+const departments = ref<any[]>([])
 const teams = ref<any[]>([])
 const periods = ref<any[]>([])
 const employees = ref<any[]>([])
@@ -20,19 +21,43 @@ const step = ref(0)
 const creating = ref(false)
 const result = ref<any>(null)
 const selectedRows = ref<any[]>([])
+const targetFilters = reactive({departmentId:'',teamId:'',q:''})
+function defaultNewPeriodRange() {
+  const now = new Date()
+  const quarterEnd = new Date(now.getFullYear(),Math.floor(now.getMonth()/3)*3+3,0,23,59,59,999)
+  if (quarterEnd.getTime() - now.getTime() < 7*24*60*60*1000) quarterEnd.setMonth(quarterEnd.getMonth()+3)
+  return {startTime:now,endTime:quarterEnd}
+}
+const initialRange = defaultNewPeriodRange()
 const form = reactive<any>({
   name:'',teamId:'',participantMode:'selected',participantEmployeeIds:[],participantCount:5,
-  targetType:'employee',targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
+  targetType:'employee',employeeTargetScope:'team',targetTeamId:'',targetDepartmentId:'',targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
   periodMode:'new',
-  startTime:new Date(),endTime:new Date(Date.now()+30*24*60*60*1000),rounding:'one_decimal'
+  startTime:initialRange.startTime,endTime:initialRange.endTime,rounding:'one_decimal'
 })
 
 const selectedTeam = computed(() => teams.value.find((x) => x.id === form.teamId))
 const teamEmployees = computed(() => employees.value.filter((x) => x.teamId === form.teamId && x.status === 'active'))
+const targetTeamEmployees = computed(() => employees.value.filter((x) => x.teamId === form.targetTeamId && x.status === 'active'))
+const targetDepartmentTeams = computed(() => teams.value.filter((x) => x.departmentId === form.targetDepartmentId && x.status === 'active'))
+const targetDepartmentTeamIds = computed(() => new Set(targetDepartmentTeams.value.map((x) => x.id)))
+const targetDepartmentEmployees = computed(() => employees.value.filter((x) => targetDepartmentTeamIds.value.has(x.teamId) && x.status === 'active'))
+const filteredCustomTeams = computed(() => targetFilters.departmentId ? teams.value.filter((x) => x.departmentId === targetFilters.departmentId) : teams.value)
+const filteredCustomEmployees = computed(() => employees.value.filter((employee) => {
+  if (targetFilters.departmentId && employee.departmentId !== targetFilters.departmentId) return false
+  if (targetFilters.teamId && employee.teamId !== targetFilters.teamId) return false
+  const q = targetFilters.q.trim().toLowerCase()
+  return !q || [employee.name,employee.position,employee.teamName,employee.departmentName].some((value) => String(value || '').toLowerCase().includes(q))
+}))
+const employeeTargetIds = computed(() => {
+  if (form.employeeTargetScope === 'team') return targetTeamEmployees.value.map((x) => x.id)
+  if (form.employeeTargetScope === 'department') return targetDepartmentEmployees.value.map((x) => x.id)
+  return form.targetEmployeeIds
+})
 const participantCount = computed(() => form.participantMode === 'selected' ? form.participantEmployeeIds.length : Number(form.participantCount || 0))
 const targetCount = computed(() => {
   if (form.targetType === 'team') return form.targetMode === 'selected' ? form.targetTeamIds.length : teams.value.length
-  return form.targetMode === 'selected' ? form.targetEmployeeIds.length : teamEmployees.value.length
+  return employeeTargetIds.value.length
 })
 const selectedCount = computed(() => selectedRows.value.length)
 const selectedPeriod = computed(() => periods.value.find((period) => period.id === form.periodId))
@@ -52,7 +77,7 @@ const visibleColumns = columns.selected
 const selectableColumns = columns.selectable
 const estimatedTaskCount = computed(() => {
   if (form.targetType === 'team' || form.participantMode !== 'selected' || !form.excludeSelf) return participantCount.value * targetCount.value
-  const targetSet = new Set(form.targetMode === 'selected' ? form.targetEmployeeIds : teamEmployees.value.map((x:any) => x.id))
+  const targetSet = new Set(employeeTargetIds.value)
   const selfExcluded = form.participantEmployeeIds.filter((id:string) => targetSet.has(id)).length
   return participantCount.value * targetCount.value - selfExcluded
 })
@@ -65,24 +90,27 @@ async function load() {
     canWrite.value = Boolean(activityData.canWrite)
     const options = unwrap<any>(optionRes)
     teams.value = options.teams
+    departments.value = options.departments
     periods.value = options.periods
     employees.value = options.employees
     if (!form.teamId) form.teamId = teams.value[0]?.id || ''
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '加载失败') }
 }
-function resetSelections() {
+function resetParticipants() {
   form.participantEmployeeIds = []
-  form.targetEmployeeIds = []
-  form.targetTeamIds = []
 }
 function openCreate() {
   const firstTeam = teams.value[0]?.id || ''
+  const firstDepartment = departments.value[0]?.id || ''
+  const range = defaultNewPeriodRange()
   Object.assign(form,{
     name:'',teamId:firstTeam,participantMode:'selected',participantEmployeeIds:[],participantCount:5,
-    targetType:'employee',targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
+    targetType:'employee',employeeTargetScope:'team',targetTeamId:firstTeam,targetDepartmentId:firstDepartment,
+    targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
     periodMode:'new',
-    startTime:new Date(),endTime:new Date(Date.now()+30*24*60*60*1000),rounding:'one_decimal'
+    startTime:range.startTime,endTime:range.endTime,rounding:'one_decimal'
   })
+  Object.assign(targetFilters,{departmentId:'',teamId:'',q:''})
   result.value = null
   step.value = 0
   dialog.value = true
@@ -90,15 +118,19 @@ function openCreate() {
 function selectAllParticipants() { form.participantEmployeeIds = teamEmployees.value.map((x:any) => x.id) }
 function selectAllTargets() {
   if (form.targetType === 'team') form.targetTeamIds = teams.value.map((x:any) => x.id)
-  else form.targetEmployeeIds = teamEmployees.value.map((x:any) => x.id)
+  else form.targetEmployeeIds = [...new Set([...form.targetEmployeeIds,...filteredCustomEmployees.value.map((x:any) => x.id)])]
 }
 function next() {
   if (!form.name.trim()) return ElMessage.warning('请输入评价活动名称')
   if (!form.teamId) return ElMessage.warning('请选择评价团队')
   if (form.participantMode === 'selected' && !form.participantEmployeeIds.length) return ElMessage.warning('请选择至少 1 名参与评价成员')
   if (form.participantMode === 'quantity' && (!Number.isInteger(form.participantCount) || form.participantCount < 1 || form.participantCount > 200)) return ElMessage.warning('邀请码数量必须为 1-200 的整数')
-  if (form.targetMode === 'selected' && !(form.targetType === 'team' ? form.targetTeamIds : form.targetEmployeeIds).length) return ElMessage.warning('请选择至少 1 个评价对象')
+  if (form.targetType === 'team' && form.targetMode === 'selected' && !form.targetTeamIds.length) return ElMessage.warning('请选择至少 1 个目标团队')
+  if (form.targetType === 'employee' && form.employeeTargetScope === 'team' && !form.targetTeamId) return ElMessage.warning('请选择目标团队')
+  if (form.targetType === 'employee' && form.employeeTargetScope === 'department' && !form.targetDepartmentId) return ElMessage.warning('请选择目标部门')
+  if (form.targetType === 'employee' && form.employeeTargetScope === 'custom' && !form.targetEmployeeIds.length) return ElMessage.warning('请选择至少 1 名评价对象')
   if (form.periodMode === 'existing' && !selectedPeriod.value) return ElMessage.warning('请选择评价周期')
+  if (form.periodMode === 'existing' && selectedPeriod.value && Date.now() > new Date(selectedPeriod.value.endTime).getTime()) return ElMessage.warning('所选评价周期已结束，请选择其他周期')
   if (form.periodMode === 'new' && !form.periodName.trim()) return ElMessage.warning('请输入新评价周期名称')
   if (!form.startTime || !form.endTime || new Date(form.startTime) >= new Date(form.endTime)) return ElMessage.warning('请设置正确的开始和结束时间')
   if (form.periodMode === 'existing' && selectedPeriod.value && (new Date(form.startTime) < new Date(selectedPeriod.value.startTime) || new Date(form.endTime) > new Date(selectedPeriod.value.endTime))) return ElMessage.warning('评价活动时间必须处于所选周期时间范围内')
@@ -191,11 +223,41 @@ function manageVerify(row:any) { router.push(`/admin/verify-codes?evaluationCode
 function manageTasks(row:any) { router.push(`/admin/tasks?evaluationCodeId=${encodeURIComponent(row.id)}`) }
 function statusText(status:string) { return ({active:'进行中',upcoming:'未开始',ended:'已结束',disabled:'已停用',archived:'已归档'} as any)[status] || status }
 function statusType(status:string) { return status==='active'?'success':status==='upcoming'?'warning':status==='ended'?'info':'danger' }
-watch(() => form.teamId,resetSelections)
+function applyExistingPeriod() {
+  if (form.periodMode !== 'existing' || !selectedPeriod.value) return
+  const end = new Date(selectedPeriod.value.endTime)
+  if (Date.now() > end.getTime()) return
+  const start = new Date(Math.max(Date.now(),new Date(selectedPeriod.value.startTime).getTime()))
+  form.startTime = start
+  form.endTime = end
+}
+function disabledActivityDate(date:Date) {
+  if (form.periodMode !== 'existing' || !selectedPeriod.value) return false
+  const time = date.getTime()
+  const start = new Date(selectedPeriod.value.startTime); start.setHours(0,0,0,0)
+  const end = new Date(selectedPeriod.value.endTime); end.setHours(23,59,59,999)
+  return time < start.getTime() || time > end.getTime()
+}
+watch(() => form.teamId,resetParticipants)
 watch(() => form.targetType,() => {
   form.targetEmployeeIds = []
   form.targetTeamIds = []
-  if (form.targetType === 'team') form.excludeSelf = false
+  form.excludeSelf = form.targetType === 'employee'
+})
+watch(() => form.periodId,applyExistingPeriod)
+watch(() => form.periodMode,(mode) => {
+  if (mode === 'existing') {
+    const firstAvailable = periods.value.find((period) => Date.now() <= new Date(period.endTime).getTime())
+    form.periodId = firstAvailable?.id || ''
+    applyExistingPeriod()
+  } else {
+    const range = defaultNewPeriodRange()
+    form.startTime = range.startTime
+    form.endTime = range.endTime
+  }
+})
+watch(() => targetFilters.departmentId,() => {
+  if (targetFilters.teamId && !filteredCustomTeams.value.some((team) => team.id === targetFilters.teamId)) targetFilters.teamId = ''
 })
 onMounted(load)
 </script>
@@ -244,18 +306,24 @@ onMounted(load)
             <el-form-item v-else label="邀请码数量"><el-input-number v-model="form.participantCount" :min="1" :max="200"/><small>不与团队成员总数绑定，可自由设置</small></el-form-item>
 
             <el-form-item label="评价对象类型" class="full"><el-radio-group v-model="form.targetType"><el-radio-button value="employee">给成员评分</el-radio-button><el-radio-button value="team">给团队评分</el-radio-button></el-radio-group><small>{{form.targetType==='team'?'每条评分直接计入所选团队，不会按团队成员分数换算':'每条评分计入一名具体成员'}}</small></el-form-item>
-            <el-form-item label="评价对象范围" class="full"><el-radio-group v-model="form.targetMode"><el-radio-button value="all">{{form.targetType==='team'?'全部可管理团队':'参与团队全部启用成员'}}</el-radio-button><el-radio-button value="selected">{{form.targetType==='team'?'指定团队':'指定成员'}}</el-radio-button></el-radio-group></el-form-item>
-            <el-form-item v-if="form.targetMode==='selected'" label="选择评价对象" class="full">
+            <el-form-item v-if="form.targetType==='team'" label="评价对象范围" class="full"><el-radio-group v-model="form.targetMode"><el-radio-button value="all">全部可管理团队</el-radio-button><el-radio-button value="selected">指定团队</el-radio-button></el-radio-group></el-form-item>
+            <el-form-item v-else label="成员评价对象范围" class="full"><el-radio-group v-model="form.employeeTargetScope"><el-radio-button value="team">指定团队成员</el-radio-button><el-radio-button value="department">整个部门成员</el-radio-button><el-radio-button value="custom">自定义成员</el-radio-button></el-radio-group><small>参与评价的人与被评价对象分别设置，可以跨团队选择有权限访问的成员。</small></el-form-item>
+            <el-form-item v-if="form.targetType==='employee'&&form.employeeTargetScope==='team'" label="目标团队" class="full"><el-select v-model="form.targetTeamId" filterable style="width:100%" placeholder="请选择目标团队"><el-option v-for="item in teams" :key="item.id" :label="item.name" :value="item.id"/></el-select><small>自动包含该团队全部启用成员。</small></el-form-item>
+            <el-form-item v-if="form.targetType==='employee'&&form.employeeTargetScope==='department'" label="目标部门" class="full"><el-select v-model="form.targetDepartmentId" filterable style="width:100%" placeholder="请选择目标部门"><el-option v-for="item in departments" :key="item.id" :label="item.name" :value="item.id"/></el-select><small>自动包含该部门下有效团队中的全部启用成员。</small></el-form-item>
+            <el-form-item v-if="form.targetType==='employee'&&form.employeeTargetScope==='custom'" label="自定义成员筛选" class="full">
+              <div class="target-filter-grid"><el-select v-model="targetFilters.departmentId" clearable placeholder="全部部门"><el-option v-for="item in departments" :key="item.id" :label="item.name" :value="item.id"/></el-select><el-select v-model="targetFilters.teamId" clearable placeholder="全部团队"><el-option v-for="item in filteredCustomTeams" :key="item.id" :label="item.name" :value="item.id"/></el-select><el-input v-model="targetFilters.q" clearable placeholder="搜索姓名或岗位"/></div>
+            </el-form-item>
+            <el-form-item v-if="form.targetType==='team'&&form.targetMode==='selected' || form.targetType==='employee'&&form.employeeTargetScope==='custom'" label="选择评价对象" class="full">
               <div class="select-head"><small>评价对象与邀请码数量互相独立</small><el-button link type="primary" @click="selectAllTargets">选择全部</el-button></div>
               <el-select v-if="form.targetType==='team'" v-model="form.targetTeamIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择目标团队"><el-option v-for="item in teams" :key="item.id" :label="item.name" :value="item.id"/></el-select>
-              <el-select v-else v-model="form.targetEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择评价对象"><el-option v-for="item in teamEmployees" :key="item.id" :label="`${item.name} · ${item.position}`" :value="item.id"/></el-select>
+              <el-select v-else v-model="form.targetEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择评价对象"><el-option v-for="item in filteredCustomEmployees" :key="item.id" :label="`${item.name} · ${item.departmentName} / ${item.teamName} · ${item.position}`" :value="item.id"/></el-select>
             </el-form-item>
             <el-form-item v-if="form.targetType==='employee'" label="排除自评"><el-switch v-model="form.excludeSelf"/><small>按成员名单生成时，自动移除评价本人任务</small></el-form-item>
             <el-form-item label="评价周期" class="full"><el-radio-group v-model="form.periodMode"><el-radio-button value="new">同步新建周期</el-radio-button><el-radio-button value="existing">选择已有周期</el-radio-button></el-radio-group></el-form-item>
             <el-form-item v-if="form.periodMode==='new'" label="新周期名称" class="full"><el-input v-model="form.periodName" placeholder="例如：2026年第四季度" maxlength="40"/><small>新周期与本次评价活动使用相同的开始和结束时间</small></el-form-item>
-            <el-form-item v-else label="选择评价周期" class="full"><el-select v-model="form.periodId" style="width:100%" placeholder="请选择已有评价周期"><el-option v-for="period in periods" :key="period.id" :label="`${period.name} · ${period.startTime} 至 ${period.endTime}`" :value="period.id"/></el-select><small>评价活动的开始和结束时间必须处于所选周期内</small></el-form-item>
-            <el-form-item label="开始时间"><el-date-picker v-model="form.startTime" type="datetime" style="width:100%"/></el-form-item>
-            <el-form-item label="结束时间"><el-date-picker v-model="form.endTime" type="datetime" style="width:100%"/></el-form-item>
+            <el-form-item v-else label="选择评价周期" class="full"><el-select v-model="form.periodId" style="width:100%" placeholder="请选择已有评价周期"><el-option v-for="period in periods" :key="period.id" :label="`${period.name}${Date.now()>new Date(period.endTime).getTime()?'（已结束）':''} · ${period.startTime} 至 ${period.endTime}`" :value="period.id" :disabled="Date.now()>new Date(period.endTime).getTime()"/></el-select><small>选中后默认从当前时间或周期开始时间中较晚者开始，并在周期结束时结束。</small></el-form-item>
+            <el-form-item label="开始时间"><el-date-picker v-model="form.startTime" type="datetime" :disabled-date="disabledActivityDate" style="width:100%"/></el-form-item>
+            <el-form-item label="结束时间"><el-date-picker v-model="form.endTime" type="datetime" :disabled-date="disabledActivityDate" style="width:100%"/></el-form-item>
           </div>
         </el-form>
       </section>
@@ -298,6 +366,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.flow-tip{margin:20px 0 12px}.field-toolbar{justify-content:flex-end;margin:0 0 16px}.batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px}.batch-bar span{margin-right:auto;color:var(--muted)}.batch-bar b{color:var(--brand)}.link-text{display:inline-block;max-width:100%;overflow:hidden;color:var(--brand);font-weight:650;text-overflow:ellipsis;white-space:nowrap}.code{color:var(--brand);letter-spacing:.08em}.steps{margin:6px 0 26px}.step-body{min-height:330px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.full{grid-column:1/-1}.form-grid small{display:block;margin-top:6px;color:var(--muted)}.select-head{display:flex;align-items:center;justify-content:space-between;width:100%}.confirm-card h3{margin:0 0 18px}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px}.summary-grid div,.result-summary div{display:grid;gap:7px;padding:15px;border:1px solid var(--line);border-radius:10px;background:var(--surface-warm)}.summary-grid span,.result-summary span{color:var(--muted);font-size:13px}.result-card :deep(.el-result){padding:4px 0 18px}.result-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.result-summary div{position:relative}.result-summary b{word-break:break-all}.result-summary .el-button{position:absolute;right:8px;bottom:7px}.codes-box{margin-top:18px;padding:16px;border-radius:12px;background:var(--surface-tint)}.codes-head{display:flex;align-items:center;justify-content:space-between}.codes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;max-height:240px;overflow:auto}.codes code{display:flex;align-items:center;gap:8px;padding:9px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--brand);font-weight:700}.codes span{display:grid}.codes small{color:var(--muted);font-weight:500}
-@media(max-width:700px){.form-grid,.summary-grid,.result-summary{grid-template-columns:1fr}.full{grid-column:auto}.codes{grid-template-columns:1fr}.step-body{min-height:280px}}
+.flow-tip{margin:20px 0 12px}.field-toolbar{justify-content:flex-end;margin:0 0 16px}.batch-bar{display:flex;align-items:center;gap:10px;margin:0 0 16px;padding:10px 14px}.batch-bar span{margin-right:auto;color:var(--muted)}.batch-bar b{color:var(--brand)}.link-text{display:inline-block;max-width:100%;overflow:hidden;color:var(--brand);font-weight:650;text-overflow:ellipsis;white-space:nowrap}.code{color:var(--brand);letter-spacing:.08em}.steps{margin:6px 0 26px}.step-body{min-height:330px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.full{grid-column:1/-1}.form-grid small{display:block;margin-top:6px;color:var(--muted)}.select-head{display:flex;align-items:center;justify-content:space-between;width:100%}.target-filter-grid{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:8px;width:100%}.confirm-card h3{margin:0 0 18px}.summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px}.summary-grid div,.result-summary div{display:grid;gap:7px;padding:15px;border:1px solid var(--line);border-radius:10px;background:var(--surface-warm)}.summary-grid span,.result-summary span{color:var(--muted);font-size:13px}.result-card :deep(.el-result){padding:4px 0 18px}.result-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.result-summary div{position:relative}.result-summary b{word-break:break-all}.result-summary .el-button{position:absolute;right:8px;bottom:7px}.codes-box{margin-top:18px;padding:16px;border-radius:12px;background:var(--surface-tint)}.codes-head{display:flex;align-items:center;justify-content:space-between}.codes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px;max-height:240px;overflow:auto}.codes code{display:flex;align-items:center;gap:8px;padding:9px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--brand);font-weight:700}.codes span{display:grid}.codes small{color:var(--muted);font-weight:500}
+@media(max-width:700px){.form-grid,.summary-grid,.result-summary,.target-filter-grid{grid-template-columns:1fr}.full{grid-column:auto}.codes{grid-template-columns:1fr}.step-body{min-height:280px}}
 </style>

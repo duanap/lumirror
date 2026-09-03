@@ -333,6 +333,11 @@ function migrateDatabase(db) {
     if (!Array.isArray(evaluation.targetTeamIds)) evaluation.targetTeamIds = []
     if (!Array.isArray(evaluation.participantEmployeeIds)) evaluation.participantEmployeeIds = []
     evaluation.targetMode ||= 'selected'
+    if (!['team','department','custom'].includes(evaluation.employeeTargetScope)) {
+      evaluation.employeeTargetScope = evaluation.targetMode === 'selected' ? 'custom' : 'team'
+    }
+    evaluation.targetTeamId ||= evaluation.teamId
+    evaluation.targetDepartmentId ||= evaluation.departmentId
     evaluation.linkCode ||= generateUniqueLinkCode(db)
   }
   const evaluationById = new Map(db.evaluationCodes.map((evaluation) => [evaluation.id,evaluation]))
@@ -1424,7 +1429,9 @@ async function adminRoutes(context,path,method,db) {
   if (path === '/admin/evaluation-options' && method === 'GET') {
     const teams = db.teams.filter((x) => visibleTeamIds(db,session).has(x.id) && x.status !== 'inactive')
     const employees = scopeEmployees(db,session).filter((x) => x.status === 'active')
-    return ok({periods:db.periods,teams,employees,defaultRules:copyJson(DEFAULT_RULES)})
+    const departmentIds = new Set(teams.map((team) => team.departmentId))
+    const departments = db.departments.filter((department) => departmentIds.has(department.id) && department.status !== 'inactive')
+    return ok({periods:db.periods,departments,teams,employees,defaultRules:copyJson(DEFAULT_RULES)})
   }
 
   if (path === '/admin/member-tags' && method === 'GET') {
@@ -1647,9 +1654,25 @@ async function adminRoutes(context,path,method,db) {
     const targetMode = input.targetMode === 'selected' ? 'selected' : 'all'
     const availableTargetTeams = db.teams.filter((item) => visibleTeamIds(db,session).has(item.id) && item.status === 'active')
     const availableTargetTeamIds = new Set(availableTargetTeams.map((item) => item.id))
-    const targetEmployeeIds = targetType === 'employee'
-      ? (targetMode === 'selected' ? uniqueStrings(input.targetEmployeeIds).filter((id) => teamEmployeeIdSet.has(id)) : teamEmployees.map((x) => x.id))
-      : []
+    const availableTargetEmployees = scopeEmployees(db,session).filter((employee) => employee.status === 'active' && availableTargetTeamIds.has(employee.teamId))
+    const availableTargetEmployeeIds = new Set(availableTargetEmployees.map((employee) => employee.id))
+    const requestedEmployeeScope = ['team','department','custom'].includes(input.employeeTargetScope) ? input.employeeTargetScope : null
+    const employeeTargetScope = requestedEmployeeScope || (targetMode === 'selected' ? 'custom' : 'team')
+    const targetTeamId = normalize(input.targetTeamId) || team.id
+    const targetDepartmentId = normalize(input.targetDepartmentId) || team.departmentId
+    let targetEmployeeIds = []
+    if (targetType === 'employee' && employeeTargetScope === 'team') {
+      if (!availableTargetTeamIds.has(targetTeamId)) return fail('请选择有权限访问的有效目标团队')
+      targetEmployeeIds = availableTargetEmployees.filter((employee) => employee.teamId === targetTeamId).map((employee) => employee.id)
+    } else if (targetType === 'employee' && employeeTargetScope === 'department') {
+      const departmentTeamIds = new Set(availableTargetTeams.filter((item) => item.departmentId === targetDepartmentId).map((item) => item.id))
+      if (!departmentTeamIds.size) return fail('请选择有权限访问的有效目标部门')
+      targetEmployeeIds = availableTargetEmployees.filter((employee) => departmentTeamIds.has(employee.teamId)).map((employee) => employee.id)
+    } else if (targetType === 'employee') {
+      const candidateIds = uniqueStrings(input.targetEmployeeIds)
+      targetEmployeeIds = candidateIds.filter((id) => availableTargetEmployeeIds.has(id))
+      if (!requestedEmployeeScope) targetEmployeeIds = targetEmployeeIds.filter((id) => teamEmployeeIdSet.has(id))
+    }
     const targetTeamIds = targetType === 'team'
       ? (targetMode === 'selected' ? uniqueStrings(input.targetTeamIds).filter((id) => availableTargetTeamIds.has(id)) : availableTargetTeams.map((item) => item.id))
       : []
@@ -1663,8 +1686,9 @@ async function adminRoutes(context,path,method,db) {
     if (!Number.isInteger(participantCount) || participantCount < 1 || participantCount > 200) return fail('邀请码数量必须是 1-200 的整数')
 
     const periodMode = input.periodMode === 'existing' ? 'existing' : 'new'
-    let period = periodMode === 'existing' ? db.periods.find((x) => x.id === input.periodId) : null
+    let period = periodMode === 'existing' ? db.periods.find((x) => x.id === input.periodId && x.status !== 'inactive') : null
     if (periodMode === 'existing' && !period) return fail('请选择有效的评价周期')
+    if (period && parseTime(period.endTime) < Date.now()) return fail('所选评价周期已结束，请选择其他周期')
     if (period && (parseTime(input.startTime) < parseTime(period.startTime) || parseTime(input.endTime) > parseTime(period.endTime))) return fail('评价活动时间必须处于所选周期时间范围内')
     if (!period) {
       period = {
@@ -1679,7 +1703,9 @@ async function adminRoutes(context,path,method,db) {
       linkCode:generateUniqueLinkCode(db),
       teamId:team.id,departmentId:team.departmentId,status:'active',startTime:input.startTime,endTime:input.endTime,
       rules:prepareScoreRules(Array.isArray(input.rules)&&input.rules.length?input.rules:DEFAULT_RULES),rounding:input.rounding||DEFAULT_ROUNDING,
-      participantMode,participantEmployeeIds,targetType,targetMode,targetEmployeeIds,targetTeamIds,
+      participantMode,participantEmployeeIds,targetType,
+      targetMode:targetType === 'team' ? targetMode : employeeTargetScope === 'custom' ? 'selected' : 'all',
+      employeeTargetScope,targetTeamId,targetDepartmentId,targetEmployeeIds,targetTeamIds,
       excludeSelf:targetType === 'employee' && input.excludeSelf !== false,
       createdAt:nowText(),updatedAt:nowText()
     }
@@ -1706,6 +1732,10 @@ async function adminRoutes(context,path,method,db) {
     if (input.startTime !== undefined) updates.startTime = input.startTime
     if (input.endTime !== undefined) updates.endTime = input.endTime
     if ((updates.startTime || updates.endTime) && parseTime(updates.startTime || evaluation.startTime) >= parseTime(updates.endTime || evaluation.endTime)) return fail('开始时间和结束时间无效')
+    if (updates.startTime || updates.endTime) {
+      const period = db.periods.find((item) => item.id === evaluation.periodId)
+      if (!period || parseTime(updates.startTime || evaluation.startTime) < parseTime(period.startTime) || parseTime(updates.endTime || evaluation.endTime) > parseTime(period.endTime)) return fail('评价活动时间必须处于所属周期时间范围内')
+    }
     Object.assign(evaluation,updates,{updatedAt:nowText()})
     await saveDatabase(context,db)
     return ok(activityView(db,evaluation))

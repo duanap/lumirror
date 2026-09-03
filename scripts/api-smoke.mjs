@@ -115,6 +115,22 @@ assert.ok(preservedEmployee)
 assert.deepEqual(preservedEmployee.tagIds,[coreTag.payload.data.id])
 assert.equal(preservedEmployee.tags[0].name,'骨干')
 
+const backendTeam = await call('/admin/teams',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'后端组',departmentId:'dep_rd',leader:'',sort:3,status:'active'}
+})
+assert.equal(backendTeam.status,200)
+const backendEmployee = await call('/admin/employees',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'后端成员',gender:'male',departmentId:'dep_rd',teamId:backendTeam.payload.data.id,position:'后端工程师',status:'active',avatar:'',tagIds:[]}
+})
+assert.equal(backendEmployee.status,200)
+const inactiveBackendEmployee = await call('/admin/employees',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'停用成员',gender:'female',departmentId:'dep_rd',teamId:backendTeam.payload.data.id,position:'后端工程师',status:'inactive',avatar:'',tagIds:[]}
+})
+assert.equal(inactiveBackendEmployee.status,200)
+
 const createdUser = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
   body:{username:'teamlead1',displayName:'研发团队长',password:'teamlead123',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active'}
@@ -153,6 +169,70 @@ assert.ok(scopedEmployees.payload.data.items.every((x) => x.teamId === 'team_rd'
 
 const start = new Date(Date.now()-60_000).toISOString()
 const end = new Date(Date.now()+86_400_000).toISOString()
+
+const boundedPeriod = await call('/admin/periods',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'范围约束测试周期',startTime:new Date(Date.now()-3_600_000).toISOString(),endTime:new Date(Date.now()+2*86_400_000).toISOString(),status:'active'}
+})
+assert.equal(boundedPeriod.status,200)
+const singleTeamActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'单团队成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(singleTeamActivity.status,200)
+assert.equal(singleTeamActivity.payload.data.activity.employeeTargetScope,'team')
+assert.equal(singleTeamActivity.payload.data.taskCount,singleTeamActivity.payload.data.targetCount-1)
+
+const departmentActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'跨团队部门成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'department',targetDepartmentId:'dep_rd',excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(departmentActivity.status,200)
+assert.equal(departmentActivity.payload.data.activity.employeeTargetScope,'department')
+assert.ok(departmentActivity.payload.data.activity.targetEmployeeIds.includes(backendEmployee.payload.data.id))
+assert.ok(!departmentActivity.payload.data.activity.targetEmployeeIds.includes(inactiveBackendEmployee.payload.data.id))
+assert.equal(departmentActivity.payload.data.taskCount,departmentActivity.payload.data.targetCount-1)
+
+const customScopeActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'自定义跨团队成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_002',backendEmployee.payload.data.id],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(customScopeActivity.status,200)
+assert.deepEqual(customScopeActivity.payload.data.activity.targetEmployeeIds,['emp_002',backendEmployee.payload.data.id])
+assert.equal(customScopeActivity.payload.data.taskCount,2)
+
+const includeSelfActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'允许自评测试',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_001',backendEmployee.payload.data.id],excludeSelf:false,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(includeSelfActivity.status,200)
+assert.equal(includeSelfActivity.payload.data.taskCount,2)
+
+const beforePeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'周期前越界',teamId:'team_rd',participantMode:'quantity',participantCount:1,targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:new Date(Date.now()-7_200_000).toISOString(),endTime:end}
+})
+assert.equal(beforePeriodActivity.status,400)
+const afterPeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'周期后越界',teamId:'team_rd',participantMode:'quantity',participantCount:1,targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:new Date(Date.now()+3*86_400_000).toISOString()}
+})
+assert.equal(afterPeriodActivity.status,400)
+const expiredPeriod = await call('/admin/periods',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'已结束周期',startTime:new Date(Date.now()-3*86_400_000).toISOString(),endTime:new Date(Date.now()-2*86_400_000).toISOString(),status:'active'}
+})
+assert.equal(expiredPeriod.status,200)
+const expiredPeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'已结束周期活动',teamId:'team_rd',participantMode:'quantity',participantCount:1,targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',periodMode:'existing',periodId:expiredPeriod.payload.data.id,startTime:new Date(Date.now()-3*86_400_000+1000).toISOString(),endTime:new Date(Date.now()-2*86_400_000-1000).toISOString()}
+})
+assert.equal(expiredPeriodActivity.status,400)
+const scopedTargetDenied = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:teamCookie,
+  body:{name:'越权目标成员',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:[backendEmployee.payload.data.id],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(scopedTargetDenied.status,400)
 
 const createdMember = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
