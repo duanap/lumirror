@@ -19,6 +19,16 @@ export interface Employee {
   position: string
   status: 'active' | 'inactive'
   avatar?: string
+  tagIds?: string[]
+  tags?: MemberTag[]
+}
+
+export interface MemberTag {
+  id: string
+  name: string
+  memberCount?: number
+  createdAt?: string
+  updatedAt?: string
 }
 
 export interface EvaluationTarget {

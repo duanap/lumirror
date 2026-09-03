@@ -48,6 +48,15 @@ function normalizeEmployeeAvatar(value, gender) {
   const avatar = normalize(value)
   return AVATAR_PRESET_GENDERS[avatar] === gender ? avatar : ''
 }
+function normalizeMemberTagName(value) {
+  const name = normalize(value).replace(/\s+/g,' ')
+  if (!name || name.length > 20) throw httpError('标签名称需为 1-20 个字符')
+  return name
+}
+function resolveMemberTagIds(db, values) {
+  const validIds = new Set((db.memberTags || []).map((tag) => tag.id))
+  return uniqueStrings(values).filter((id) => validIds.has(id))
+}
 function nowText() { return new Date().toISOString() }
 function randomId(prefix = 'id') {
   const bytes = new Uint8Array(8)
@@ -210,6 +219,7 @@ async function createSeedDatabase(context) {
       { id:'team_pm', name:'产品团队', departmentId:'dep_product', leader:'王敏', sort:2, status:'active' }
     ],
     employees,
+    memberTags: [],
     periods: [{ id:'period_demo', name:'2026年第三季度', startTime:'2026-07-01T00:00:00+08:00', endTime:'2026-09-30T23:59:59+08:00', status:'active', anonymous:true, allowRepeat:false, allowModify:false, createdAt:now }],
     evaluationCodes: [{
       id:evaluationId, code:evaluationCode, linkCode:inviteLinkCode, name:'研发团队匿名反馈', periodId:'period_demo',
@@ -267,7 +277,7 @@ function expireTimedInvites(db) {
 }
 
 function migrateDatabase(db) {
-  const arrays = ['users','admins','departments','teams','employees','periods','evaluationCodes','verifyCodes','tasks','scores','timedInvites','logs']
+  const arrays = ['users','admins','departments','teams','employees','memberTags','periods','evaluationCodes','verifyCodes','tasks','scores','timedInvites','logs']
   for (const key of arrays) if (!Array.isArray(db[key])) db[key] = []
   if (!db.users.length && db.admins.length) {
     db.users = db.admins.map((item) => ({
@@ -292,9 +302,23 @@ function migrateDatabase(db) {
     if (user.username === 'admin' && user.salt === 'review_admin_v1') user.mustChangePassword = true
     user.mustChangePassword = Boolean(user.mustChangePassword)
   }
+  const seenTagIds = new Set()
+  const seenTagNames = new Set()
+  db.memberTags = db.memberTags.filter((tag) => {
+    tag.id = normalize(tag.id) || randomId('tag')
+    tag.name = normalize(tag.name).replace(/\s+/g,' ')
+    const key = tag.name.toLocaleLowerCase('zh-CN')
+    if (!tag.name || tag.name.length > 20 || seenTagIds.has(tag.id) || seenTagNames.has(key)) return false
+    seenTagIds.add(tag.id)
+    seenTagNames.add(key)
+    tag.createdAt ||= nowText()
+    tag.updatedAt ||= tag.createdAt
+    return true
+  })
   for (const employee of db.employees) {
     delete employee.employeeNo
     delete employee.phone
+    employee.tagIds = resolveMemberTagIds(db,employee.tagIds)
   }
   for (const evaluation of db.evaluationCodes) {
     evaluation.rules = Array.isArray(evaluation.rules) && evaluation.rules.length ? evaluation.rules : copyJson(DEFAULT_RULES)
@@ -570,10 +594,13 @@ function activityStatus(evaluation) {
 function enrichEmployees(db) {
   const departments = new Map(db.departments.map((x) => [x.id,x]))
   const teams = new Map(db.teams.map((x) => [x.id,x]))
+  const tags = new Map((db.memberTags || []).map((tag) => [tag.id,tag]))
   return db.employees.map((e) => ({
     ...e,
     departmentName:departments.get(e.departmentId)?.name || '',
-    teamName:teams.get(e.teamId)?.name || ''
+    teamName:teams.get(e.teamId)?.name || '',
+    tagIds:resolveMemberTagIds(db,e.tagIds),
+    tags:resolveMemberTagIds(db,e.tagIds).map((id) => tags.get(id)).filter(Boolean)
   }))
 }
 function computeTotal(scores,rules,rounding) {
@@ -903,11 +930,11 @@ function assertImportArray(data, key, max) {
 function validateImportData(data) {
   if (!isPlainObject(data)) throw httpError('JSON 数据结构无效')
   const limits = {
-    departments:1000, teams:1000, employees:5000, periods:1000, evaluationCodes:1000,
+    departments:1000, teams:1000, employees:5000, memberTags:1000, periods:1000, evaluationCodes:1000,
     verifyCodes:50000, tasks:200000, scores:200000, timedInvites:50000, logs:50000
   }
   for (const [key,max] of Object.entries(limits)) {
-    if (data[key] === undefined && ['timedInvites','logs'].includes(key)) data[key] = []
+    if (data[key] === undefined && ['memberTags','timedInvites','logs'].includes(key)) data[key] = []
     assertImportArray(data,key,max)
   }
   if ((data.verifyCodes || []).some((x) => x.code === '[REDACTED]' || x.codeHash === '[HASH]' || x.codeFingerprint === '[HASH]')) {
@@ -916,11 +943,15 @@ function validateImportData(data) {
   const departmentIds = new Set(data.departments.map((x) => String(x.id)))
   const teamIds = new Set(data.teams.map((x) => String(x.id)))
   const employeeIds = new Set(data.employees.map((x) => String(x.id)))
+  const memberTagIds = new Set(data.memberTags.map((x) => String(x.id)))
   const periodIds = new Set(data.periods.map((x) => String(x.id)))
   const evaluationIds = new Set(data.evaluationCodes.map((x) => String(x.id)))
   const verifyIds = new Set(data.verifyCodes.map((x) => String(x.id)))
   if (data.teams.some((x) => x.departmentId && !departmentIds.has(String(x.departmentId)))) throw httpError('团队所属部门不存在')
   if (data.employees.some((x) => !teamIds.has(String(x.teamId)) || !departmentIds.has(String(x.departmentId)))) throw httpError('成员所属部门或团队不存在')
+  if (data.memberTags.some((x) => !normalize(x.name) || normalize(x.name).length > 20)) throw httpError('成员标签名称无效')
+  if (new Set(data.memberTags.map((x) => normalize(x.name).toLocaleLowerCase('zh-CN'))).size !== data.memberTags.length) throw httpError('成员标签名称不能重复')
+  if (data.employees.some((x) => uniqueStrings(x.tagIds).some((id) => !memberTagIds.has(id)))) throw httpError('成员关联的标签不存在')
   if (data.evaluationCodes.some((x) => !teamIds.has(String(x.teamId)) || !departmentIds.has(String(x.departmentId)) || !periodIds.has(String(x.periodId)))) throw httpError('评价活动关联的部门、团队或周期不存在')
   if (data.verifyCodes.some((x) => !evaluationIds.has(String(x.evaluationCodeId)))) throw httpError('邀请码关联的评价活动不存在')
   const validTarget = (item) => {
@@ -1396,6 +1427,59 @@ async function adminRoutes(context,path,method,db) {
     return ok({periods:db.periods,teams,employees,defaultRules:copyJson(DEFAULT_RULES)})
   }
 
+  if (path === '/admin/member-tags' && method === 'GET') {
+    const denied = requirePermission(session,'employees:view'); if (denied) return denied
+    const scopedEmployees = scopeEmployees(db,session)
+    return ok({
+      items:(db.memberTags || []).map((tag) => ({
+        ...tag,memberCount:scopedEmployees.filter((employee) => (employee.tagIds || []).includes(tag.id)).length
+      })),
+      canCreate:hasPermission(session,'employees:write'),
+      canManage:session.role === 'admin'
+    })
+  }
+  if (path === '/admin/member-tags' && method === 'POST') {
+    const denied = requirePermission(session,'employees:write'); if (denied) return denied
+    const input = await bodyJson(context.request)
+    let name
+    try { name = normalizeMemberTagName(input.name) } catch (error) { return fail(String(error.message || error)) }
+    if ((db.memberTags || []).some((tag) => tag.name.toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))) return fail('标签名称已存在',409)
+    const tag = {id:randomId('tag'),name,createdAt:nowText(),updatedAt:nowText()}
+    db.memberTags.push(tag)
+    appendLog(db,session,'member_tag.create',{tagId:tag.id,name:tag.name})
+    await saveDatabase(context,db)
+    return ok({...tag,memberCount:0})
+  }
+  match = path.match(/^\/admin\/member-tags\/([^/]+)$/)
+  if (match && method === 'PUT') {
+    if (session.role !== 'admin') return fail('只有管理员可以重命名成员标签',403)
+    const tag = db.memberTags.find((item) => item.id === match[1])
+    if (!tag) return fail('成员标签不存在',404)
+    const input = await bodyJson(context.request)
+    let name
+    try { name = normalizeMemberTagName(input.name) } catch (error) { return fail(String(error.message || error)) }
+    if (db.memberTags.some((item) => item.id !== tag.id && item.name.toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))) return fail('标签名称已存在',409)
+    const previousName = tag.name
+    Object.assign(tag,{name,updatedAt:nowText()})
+    appendLog(db,session,'member_tag.rename',{tagId:tag.id,previousName,name})
+    await saveDatabase(context,db)
+    return ok(tag)
+  }
+  if (match && method === 'DELETE') {
+    if (session.role !== 'admin') return fail('只有管理员可以删除成员标签',403)
+    const tag = db.memberTags.find((item) => item.id === match[1])
+    if (!tag) return fail('成员标签不存在',404)
+    let detachedCount = 0
+    db.employees.forEach((employee) => {
+      if ((employee.tagIds || []).includes(tag.id)) detachedCount++
+      employee.tagIds = (employee.tagIds || []).filter((id) => id !== tag.id)
+    })
+    db.memberTags = db.memberTags.filter((item) => item.id !== tag.id)
+    appendLog(db,session,'member_tag.delete',{tagId:tag.id,name:tag.name,detachedCount})
+    await saveDatabase(context,db)
+    return ok({deleted:true,detachedCount})
+  }
+
   if (path === '/admin/employees' && method === 'GET') {
     const denied = requirePermission(session,'employees:view'); if (denied) return denied
     const q = normalize(url.searchParams.get('q')).toLowerCase()
@@ -1409,7 +1493,11 @@ async function adminRoutes(context,path,method,db) {
     if (status) items = items.filter((x) => x.status === status)
     const allowedTeams = db.teams.filter((x) => visibleTeamIds(db,session).has(x.id))
     const allowedDepartmentIds = new Set(allowedTeams.map((x) => x.departmentId))
-    return ok({items,options:{departments:db.departments.filter((x) => allowedDepartmentIds.has(x.id)),teams:allowedTeams},canWrite:hasPermission(session,'employees:write')})
+    return ok({
+      items,
+      options:{departments:db.departments.filter((x) => allowedDepartmentIds.has(x.id)),teams:allowedTeams,tags:db.memberTags || []},
+      canWrite:hasPermission(session,'employees:write'),canManageTags:session.role === 'admin'
+    })
   }
   match = path.match(/^\/admin\/employees\/([^/]+)$/)
   if (match && method === 'PUT') {
@@ -1424,8 +1512,10 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    delete input.tags
     input.gender = ['male','female','unknown'].includes(input.gender) ? input.gender : current.gender
     input.avatar = normalizeEmployeeAvatar(input.avatar,input.gender)
+    input.tagIds = resolveMemberTagIds(db,input.tagIds)
     db.employees[index] = {...current,...input,id:current.id,updatedAt:nowText()}
     delete db.employees[index].employeeNo
     delete db.employees[index].phone
@@ -1447,9 +1537,11 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    delete input.tags
     const gender = ['male','female','unknown'].includes(input.gender) ? input.gender : 'unknown'
     const employee = {
       ...input,id:randomId('emp'),gender,avatar:normalizeEmployeeAvatar(input.avatar,gender),
+      tagIds:resolveMemberTagIds(db,input.tagIds),
       status:input.status === 'inactive' ? 'inactive' : 'active',createdAt:nowText(),updatedAt:nowText()
     }
     db.employees.push(employee)

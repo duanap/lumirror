@@ -1,14 +1,14 @@
 import { DatabaseSync } from 'node:sqlite'
 
 const DATABASE_KEY = 'employee_review_db_v1'
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 const COLLECTION_KEYS = [
-  'users', 'departments', 'teams', 'employees', 'periods', 'evaluationCodes',
+  'users', 'departments', 'teams', 'employees', 'memberTags', 'periods', 'evaluationCodes',
   'verifyCodes', 'tasks', 'scores', 'timedInvites', 'logs'
 ]
 
 const COLLECTION_TABLES = {
-  users: 'users', departments: 'departments', teams: 'teams', employees: 'employees',
+  users: 'users', departments: 'departments', teams: 'teams', employees: 'employees', memberTags:'member_tags',
   periods: 'review_periods', evaluationCodes: 'evaluation_activities',
   verifyCodes: 'verification_codes', tasks: 'evaluation_tasks', scores: 'scores',
   timedInvites: 'timed_invites', logs: 'audit_logs'
@@ -17,7 +17,7 @@ const COLLECTION_TABLES = {
 const DELETE_ORDER = [
   'score_values', 'scores', 'timed_invites', 'evaluation_tasks', 'verification_codes',
   'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'evaluation_activities',
-  'users', 'employees', 'teams', 'departments', 'review_periods', 'audit_logs', 'settings', 'app_state'
+  'users', 'employee_tags', 'employees', 'member_tags', 'teams', 'departments', 'review_periods', 'audit_logs', 'settings', 'app_state'
 ]
 
 const json = (value) => JSON.stringify(value ?? null)
@@ -86,10 +86,18 @@ export class RelationalSqliteStorage {
         id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id), name TEXT NOT NULL,
         status TEXT NOT NULL, sort_value INTEGER, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS member_tags (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS employees (
         id TEXT PRIMARY KEY, department_id TEXT NOT NULL REFERENCES departments(id),
         team_id TEXT NOT NULL REFERENCES teams(id), name TEXT NOT NULL, status TEXT NOT NULL,
         payload_json TEXT NOT NULL, list_order INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS employee_tags (
+        employee_id TEXT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES member_tags(id) ON DELETE CASCADE,
+        list_order INTEGER NOT NULL, PRIMARY KEY (employee_id, tag_id)
       );
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, role TEXT NOT NULL, status TEXT NOT NULL,
@@ -161,6 +169,7 @@ export class RelationalSqliteStorage {
       );
       CREATE INDEX IF NOT EXISTS idx_teams_department ON teams(department_id);
       CREATE INDEX IF NOT EXISTS idx_employees_team ON employees(team_id);
+      CREATE INDEX IF NOT EXISTS idx_employee_tags_tag ON employee_tags(tag_id);
       CREATE INDEX IF NOT EXISTS idx_evaluations_team ON evaluation_activities(team_id);
       CREATE INDEX IF NOT EXISTS idx_verification_evaluation ON verification_codes(evaluation_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_verification_status ON evaluation_tasks(verification_code_id, status);
@@ -246,6 +255,8 @@ export class RelationalSqliteStorage {
       .map((row) => withTargetReference(parseJson(row.payload_json,{}),row.target_type,row.target_id))
     collections.scores = this.database.prepare('SELECT target_type, target_id, payload_json FROM scores ORDER BY list_order').all()
       .map((row) => withTargetReference(parseJson(row.payload_json,{}),row.target_type,row.target_id))
+    const employeeTags = rowsByParent(this.database.prepare('SELECT employee_id, tag_id FROM employee_tags ORDER BY employee_id, list_order').all(),'employee_id','tag_id')
+    collections.employees = collections.employees.map((item) => ({...item,tagIds:employeeTags.get(item.id) || []}))
 
     const rules = new Map()
     for (const row of this.database.prepare('SELECT evaluation_id, operation, payload_json FROM evaluation_rules ORDER BY evaluation_id, list_order').all()) {
@@ -302,8 +313,14 @@ export class RelationalSqliteStorage {
       for (const [index,item] of (database.departments || []).entries()) insertDepartment.run(item.id,item.name,item.status || 'active',numberOrNull(item.sort),json(item),index)
       const insertTeam = this.database.prepare('INSERT INTO teams (id, department_id, name, status, sort_value, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?)')
       for (const [index,item] of (database.teams || []).entries()) insertTeam.run(item.id,item.departmentId,item.name,item.status || 'active',numberOrNull(item.sort),json(item),index)
+      const insertMemberTag = this.database.prepare('INSERT INTO member_tags (id, name, payload_json, list_order) VALUES (?, ?, ?, ?)')
+      for (const [index,item] of (database.memberTags || []).entries()) insertMemberTag.run(item.id,item.name,json(item),index)
       const insertEmployee = this.database.prepare('INSERT INTO employees (id, department_id, team_id, name, status, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      for (const [index,item] of (database.employees || []).entries()) insertEmployee.run(item.id,item.departmentId,item.teamId,item.name,item.status || 'active',json(item),index)
+      const insertEmployeeTag = this.database.prepare('INSERT INTO employee_tags (employee_id, tag_id, list_order) VALUES (?, ?, ?)')
+      for (const [index,item] of (database.employees || []).entries()) {
+        insertEmployee.run(item.id,item.departmentId,item.teamId,item.name,item.status || 'active',json(without(item,['tagIds','tags'])),index)
+        for (const [tagIndex,tagId] of (item.tagIds || []).entries()) insertEmployeeTag.run(item.id,tagId,tagIndex)
+      }
       const insertUser = this.database.prepare('INSERT INTO users (id, username, role, status, department_id, team_id, employee_id, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       for (const [index,item] of (database.users || []).entries()) insertUser.run(item.id,item.username,item.role || 'admin',item.status || 'active',textOrNull(item.departmentId),textOrNull(item.teamId),textOrNull(item.employeeId),json(item),index)
       const insertPeriod = this.database.prepare('INSERT INTO review_periods (id, name, status, start_time, end_time, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?)')

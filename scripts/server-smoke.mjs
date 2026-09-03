@@ -107,7 +107,9 @@ try {
   schemaOne.close()
   const migratedStorage = new RelationalSqliteStorage(schemaOneFile)
   assert.ok(migratedStorage.database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'))
-  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 3)
+  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 4)
+  assert.ok(migratedStorage.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='member_tags'").get())
+  assert.ok(migratedStorage.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='employee_tags'").get())
   for (const table of ['evaluation_targets','evaluation_tasks','scores']) {
     const legacyTarget = migratedStorage.database.prepare(`SELECT target_type, target_id FROM ${table}`).get()
     assert.equal(legacyTarget.target_type,'employee')
@@ -139,6 +141,16 @@ try {
     body: { currentPassword: initialPassword, newPassword: changedPassword, confirmPassword: changedPassword }
   })
   assert.equal(passwordChange.status, 200)
+
+  const memberTag = await call(running.baseUrl, '/admin/member-tags', {
+    method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
+  })
+  assert.equal(memberTag.status, 200)
+  const taggedEmployee = await call(running.baseUrl, '/admin/employees/emp_003', {
+    method: 'PUT', cookie: adminCookie,
+    body: { name:'王敏', gender:'female', departmentId:'dep_rd', teamId:'team_rd', position:'产品经理', status:'active', avatar:'avatar_female_young_plain', tagIds:[memberTag.payload.data.id] }
+  })
+  assert.equal(taggedEmployee.status, 200)
 
   const now = Date.now()
   const created = await call(running.baseUrl, '/admin/evaluation-activities/create-flow', {
@@ -221,15 +233,17 @@ try {
 
   const database = new DatabaseSync(path.join(dataDir, 'lumirror.sqlite'))
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name)
-  for (const table of ['users', 'departments', 'teams', 'employees', 'review_periods', 'evaluation_activities', 'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'verification_codes', 'evaluation_tasks', 'scores', 'score_values', 'timed_invites', 'audit_logs', 'settings']) {
+  for (const table of ['users', 'departments', 'teams', 'employees', 'member_tags', 'employee_tags', 'review_periods', 'evaluation_activities', 'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'verification_codes', 'evaluation_tasks', 'scores', 'score_values', 'timed_invites', 'audit_logs', 'settings']) {
     assert.ok(tables.includes(table), `missing relational business table: ${table}`)
   }
   assert.ok(database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'), 'evaluation_rules.operation must be queryable')
-  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 3)
+  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 4)
   assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_targets WHERE target_type = 'team'").get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_tasks WHERE target_type = 'team'").get().count, 2)
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM member_tags').get().count, 1)
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM employee_tags').get().count, 1)
   assert.equal(database.prepare('PRAGMA foreign_key_check').all().length, 0)
   database.close()
 
@@ -240,6 +254,9 @@ try {
     body: { username: 'admin', password: changedPassword }
   })
   assert.equal(persistedLogin.status, 200)
+  const persistedEmployees = await call(running.baseUrl, '/admin/employees', { cookie:persistedLogin.cookie })
+  assert.equal(persistedEmployees.status, 200)
+  assert.equal(persistedEmployees.payload.data.items.find((item) => item.id === 'emp_003').tags[0].name, '服务器标签')
 
   console.log('Production relational SQLite smoke test passed: schema-v1 upgrade, rule operation column, bootstrap, restart persistence, atomic writes and concurrent scoring')
 } finally {

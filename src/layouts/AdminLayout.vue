@@ -32,9 +32,9 @@ const allGroups: any[] = [
   {
     label: '人员与组织', icon: User,
     items: [
-      { path: '/admin/employees', label: '成员管理', icon: User, permission: 'employees:view' },
       { path: '/admin/departments', label: '部门管理', icon: OfficeBuilding, adminOnly: true },
       { path: '/admin/teams', label: '团队管理', icon: Grid, permission: 'employees:view' },
+      { path: '/admin/employees', label: '成员管理', icon: User, permission: 'employees:view' },
       { path: '/admin/users', label: '账号与权限', icon: UserFilled, adminOnly: true }
     ]
   },

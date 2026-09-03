@@ -64,6 +64,7 @@ const employeeList = await call('/admin/employees?teamId=team_rd&status=active',
 assert.equal(employeeList.status,200)
 assert.ok(employeeList.payload.data.items.length >= 5)
 assert.ok(employeeList.payload.data.items.every((x) => x.teamId === 'team_rd'))
+assert.ok(employeeList.payload.data.items.every((x) => Array.isArray(x.tagIds) && Array.isArray(x.tags)))
 const avatarUpdate = await call('/admin/employees/emp_003',{
   method:'PUT',cookie:adminCookie,
   body:{name:'王敏',gender:'female',departmentId:'dep_rd',teamId:'team_rd',position:'产品经理',status:'active',avatar:'avatar_female_young_plain'}
@@ -76,6 +77,43 @@ const mismatchedAvatarUpdate = await call('/admin/employees/emp_001',{
 })
 assert.equal(mismatchedAvatarUpdate.status,200)
 assert.equal(mismatchedAvatarUpdate.payload.data.avatar,'')
+
+const coreTag = await call('/admin/member-tags',{
+  method:'POST',cookie:adminCookie,body:{name:'骨干'}
+})
+assert.equal(coreTag.status,200)
+const leadTag = await call('/admin/member-tags',{
+  method:'POST',cookie:adminCookie,body:{name:'组长'}
+})
+assert.equal(leadTag.status,200)
+const duplicateTag = await call('/admin/member-tags',{
+  method:'POST',cookie:adminCookie,body:{name:' 骨干 '}
+})
+assert.equal(duplicateTag.status,409)
+const taggedEmployee = await call('/admin/employees/emp_003',{
+  method:'PUT',cookie:adminCookie,
+  body:{name:'王敏',gender:'female',departmentId:'dep_rd',teamId:'team_rd',position:'产品经理',status:'active',avatar:'avatar_female_young_plain',tagIds:[coreTag.payload.data.id,leadTag.payload.data.id]}
+})
+assert.equal(taggedEmployee.status,200)
+assert.deepEqual(taggedEmployee.payload.data.tagIds,[coreTag.payload.data.id,leadTag.payload.data.id])
+const createdEmployee = await call('/admin/employees',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'标签测试成员',gender:'male',departmentId:'dep_rd',teamId:'team_rd',position:'工程师',status:'active',avatar:'avatar_male_young_plain',tagIds:[coreTag.payload.data.id]}
+})
+assert.equal(createdEmployee.status,200)
+assert.deepEqual(createdEmployee.payload.data.tagIds,[coreTag.payload.data.id])
+const renamedTag = await call(`/admin/member-tags/${leadTag.payload.data.id}`,{
+  method:'PUT',cookie:adminCookie,body:{name:'负责人'}
+})
+assert.equal(renamedTag.status,200)
+const deletedTag = await call(`/admin/member-tags/${leadTag.payload.data.id}`,{method:'DELETE',cookie:adminCookie})
+assert.equal(deletedTag.status,200)
+assert.equal(deletedTag.payload.data.detachedCount,1)
+const employeesAfterTagDelete = await call('/admin/employees',{cookie:adminCookie})
+const preservedEmployee = employeesAfterTagDelete.payload.data.items.find((item) => item.id === 'emp_003')
+assert.ok(preservedEmployee)
+assert.deepEqual(preservedEmployee.tagIds,[coreTag.payload.data.id])
+assert.equal(preservedEmployee.tags[0].name,'骨干')
 
 const createdUser = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
@@ -91,6 +129,10 @@ const teamPasswordChange = await call('/admin/change-password',{
   body:{currentPassword:'teamlead123',newPassword:'teamlead1234',confirmPassword:'teamlead1234'}
 })
 assert.equal(teamPasswordChange.status,200)
+const forbiddenTagRename = await call(`/admin/member-tags/${coreTag.payload.data.id}`,{
+  method:'PUT',cookie:teamCookie,body:{name:'越权重命名'}
+})
+assert.equal(forbiddenTagRename.status,403)
 
 const directUser = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
