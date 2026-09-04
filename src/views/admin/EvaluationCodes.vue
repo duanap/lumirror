@@ -32,13 +32,18 @@ function defaultNewPeriodRange() {
 const initialRange = defaultNewPeriodRange()
 const form = reactive<any>({
   name:'',teamId:'',participantMode:'selected',participantEmployeeIds:[],participantCount:5,
+  participantScope:'team',participantTeamId:'',participantDepartmentId:'',
   targetType:'employee',employeeTargetScope:'team',targetTeamId:'',targetDepartmentId:'',targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
   periodMode:'new',
   startTime:initialRange.startTime,endTime:initialRange.endTime,rounding:'one_decimal'
 })
 
 const selectedTeam = computed(() => teams.value.find((x) => x.id === form.teamId))
-const teamEmployees = computed(() => employees.value.filter((x) => x.teamId === form.teamId && x.status === 'active'))
+const participantTeamEmployees = computed(() => employees.value.filter((x) => x.teamId === form.participantTeamId && x.status === 'active'))
+const participantDepartmentTeams = computed(() => teams.value.filter((x) => x.departmentId === form.participantDepartmentId && x.status === 'active'))
+const participantDepartmentTeamIds = computed(() => new Set(participantDepartmentTeams.value.map((x) => x.id)))
+const participantDepartmentEmployees = computed(() => employees.value.filter((x) => participantDepartmentTeamIds.value.has(x.teamId) && x.status === 'active'))
+const participantPool = computed(() => form.participantScope === 'department' ? participantDepartmentEmployees.value : participantTeamEmployees.value)
 const targetTeamEmployees = computed(() => employees.value.filter((x) => x.teamId === form.targetTeamId && x.status === 'active'))
 const targetDepartmentTeams = computed(() => teams.value.filter((x) => x.departmentId === form.targetDepartmentId && x.status === 'active'))
 const targetDepartmentTeamIds = computed(() => new Set(targetDepartmentTeams.value.map((x) => x.id)))
@@ -115,6 +120,7 @@ function openCreate() {
   const range = defaultNewPeriodRange()
   Object.assign(form,{
     name:'',teamId:firstTeam,participantMode:'selected',participantEmployeeIds:[],participantCount:5,
+    participantScope:'team',participantTeamId:firstTeam,participantDepartmentId:firstDepartment,
     targetType:'employee',employeeTargetScope:'team',targetTeamId:firstTeam,targetDepartmentId:firstDepartment,
     targetMode:'all',targetEmployeeIds:[],targetTeamIds:[],excludeSelf:true,periodId:'',periodName:'',
     periodMode:'new',
@@ -125,7 +131,7 @@ function openCreate() {
   step.value = 0
   dialog.value = true
 }
-function selectAllParticipants() { form.participantEmployeeIds = teamEmployees.value.map((x:any) => x.id) }
+function selectAllParticipants() { form.participantEmployeeIds = participantPool.value.map((x:any) => x.id) }
 function selectAllTargets() {
   if (form.targetType === 'team') form.targetTeamIds = teams.value.map((x:any) => x.id)
   else form.targetEmployeeIds = [...new Set([...form.targetEmployeeIds,...filteredCustomEmployees.value.map((x:any) => x.id)])]
@@ -133,6 +139,8 @@ function selectAllTargets() {
 function next() {
   if (!form.name.trim()) return ElMessage.warning('请输入评价活动名称')
   if (!form.teamId) return ElMessage.warning('请选择评价团队')
+  if (form.participantScope === 'team' && !form.participantTeamId) return ElMessage.warning('请选择参与团队')
+  if (form.participantScope === 'department' && !form.participantDepartmentId) return ElMessage.warning('请选择参与部门')
   if (form.participantMode === 'selected' && !form.participantEmployeeIds.length) return ElMessage.warning('请选择至少 1 名参与评价成员')
   if (form.participantMode === 'quantity' && (!Number.isInteger(form.participantCount) || form.participantCount < 1 || form.participantCount > 200)) return ElMessage.warning('邀请码数量必须为 1-200 的整数')
   if (form.targetType === 'team' && form.targetMode === 'selected' && !form.targetTeamIds.length) return ElMessage.warning('请选择至少 1 个目标团队')
@@ -268,7 +276,11 @@ function disabledActivityDate(date:Date) {
   const end = new Date(selectedPeriod.value.endTime); end.setHours(23,59,59,999)
   return time < start.getTime() || time > end.getTime()
 }
-watch(() => form.teamId,resetParticipants)
+watch(() => form.teamId,(teamId,previousTeamId) => {
+  resetParticipants()
+  if (form.participantScope === 'team' && (!form.participantTeamId || form.participantTeamId === previousTeamId)) form.participantTeamId = teamId
+})
+watch(() => form.participantScope,() => { resetParticipants() })
 watch(() => form.targetType,() => {
   form.targetEmployeeIds = []
   form.targetTeamIds = []
@@ -327,11 +339,14 @@ onMounted(load)
         <el-form label-position="top">
           <div class="form-grid">
             <el-form-item label="评价活动名称"><el-input v-model="form.name" placeholder="例如：研发团队季度匿名反馈" maxlength="40"/></el-form-item>
-            <el-form-item label="参与团队"><el-select v-model="form.teamId" style="width:100%"><el-option v-for="team in teams" :key="team.id" :label="team.name" :value="team.id"/></el-select><small>参与评价的成员从这个团队中选择</small></el-form-item>
+            <el-form-item label="活动管理团队"><el-select v-model="form.teamId" style="width:100%"><el-option v-for="team in teams" :key="team.id" :label="team.name" :value="team.id"/></el-select><small>用于活动归属与权限管理；参与成员可另外按团队或部门选择。</small></el-form-item>
             <el-form-item label="邀请码生成方式" class="full"><el-radio-group v-model="form.participantMode"><el-radio-button value="selected">按成员名单生成</el-radio-button><el-radio-button value="quantity">仅指定数量</el-radio-button></el-radio-group></el-form-item>
+            <el-form-item label="参与成员范围" class="full"><el-radio-group v-model="form.participantScope"><el-radio-button value="team">指定团队成员</el-radio-button><el-radio-button value="department">整个部门成员</el-radio-button></el-radio-group><small>部门范围会包含该部门下有效团队中的全部启用成员；不改变评价对象范围。</small></el-form-item>
+            <el-form-item v-if="form.participantScope==='team'" label="参与团队" class="full"><el-select v-model="form.participantTeamId" filterable style="width:100%" placeholder="请选择参与团队"><el-option v-for="team in teams" :key="team.id" :label="team.name" :value="team.id"/></el-select></el-form-item>
+            <el-form-item v-else label="参与部门" class="full"><el-select v-model="form.participantDepartmentId" filterable style="width:100%" placeholder="请选择参与部门"><el-option v-for="department in departments" :key="department.id" :label="department.name" :value="department.id"/></el-select></el-form-item>
             <el-form-item v-if="form.participantMode==='selected'" label="参与评价成员" class="full">
               <div class="select-head"><small>选中的每位成员会绑定一个匿名唯一邀请码</small><el-button link type="primary" @click="selectAllParticipants">选择全部</el-button></div>
-              <el-select v-model="form.participantEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择参与成员"><el-option v-for="item in teamEmployees" :key="item.id" :label="`${item.name} · ${item.position}`" :value="item.id"/></el-select>
+              <el-select v-model="form.participantEmployeeIds" multiple filterable collapse-tags :max-collapse-tags="4" style="width:100%" placeholder="请选择参与成员"><el-option v-for="item in participantPool" :key="item.id" :label="`${item.name} · ${item.departmentName} / ${item.teamName} · ${item.position}`" :value="item.id"/></el-select>
             </el-form-item>
             <el-form-item v-else label="邀请码数量"><el-input-number v-model="form.participantCount" :min="1" :max="200"/><small>不与团队成员总数绑定，可自由设置</small></el-form-item>
 
@@ -363,7 +378,8 @@ onMounted(load)
         <div class="summary-grid">
           <div><span>评价活动</span><b>{{form.name}}</b></div>
           <div><span>评价周期</span><b>{{periodLabel}}</b></div>
-          <div><span>参与团队</span><b>{{selectedTeam?.name}}</b></div>
+          <div><span>活动管理团队</span><b>{{selectedTeam?.name}}</b></div>
+          <div><span>参与成员范围</span><b>{{form.participantScope==='department' ? departments.find((x)=>x.id===form.participantDepartmentId)?.name : teams.find((x)=>x.id===form.participantTeamId)?.name}}</b></div>
           <div><span>邀请链接</span><b>自动生成短链</b></div>
           <div><span>邀请码</span><b>{{participantCount}} 个 6 位数字</b></div>
           <div><span>评价对象</span><b>{{targetCount}} {{form.targetType==='team'?'个团队':'人'}}</b></div>

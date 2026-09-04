@@ -25,6 +25,11 @@ const activeView = ref<'codes'|'timed'>('codes')
 const form = reactive({ evaluationCodeId:'', mode:'quantity', count:5, participantEmployeeIds:[] as string[] })
 
 const selectedActivity = computed(() => activities.value.find((x) => x.id === form.evaluationCodeId))
+const selectableParticipants = computed(() => {
+  if (!selectedActivity.value) return []
+  if (selectedActivity.value.participantScope === 'department') return employees.value.filter((employee:any) => employee.departmentId === selectedActivity.value.participantDepartmentId)
+  return employees.value.filter((employee:any) => employee.teamId === (selectedActivity.value.participantTeamId || selectedActivity.value.teamId))
+})
 const selectedCount = computed(() => selectedRows.value.length)
 const verifyColumns = [
   { key:'participant', label:'绑定成员' },
@@ -173,7 +178,7 @@ onMounted(load)
         <el-form-item label="评价活动"><el-select v-model="form.evaluationCodeId" style="width:100%"><el-option v-for="item in activities" :key="item.id" :label="`${item.name}${item.teamName ? ` · ${item.teamName}` : ''}${item.status==='archived'?'（已归档）':''}`" :value="item.id" :disabled="item.status==='archived'"/></el-select></el-form-item>
         <el-form-item label="生成方式"><el-radio-group v-model="form.mode"><el-radio-button value="quantity">指定数量</el-radio-button><el-radio-button value="selected">绑定成员</el-radio-button></el-radio-group></el-form-item>
         <el-form-item v-if="form.mode==='quantity'" label="新增数量"><el-input-number v-model="form.count" :min="1" :max="100"/><span class="hint">数量不与团队成员总数绑定。</span></el-form-item>
-        <el-form-item v-else label="选择成员"><el-select v-model="form.participantEmployeeIds" multiple filterable style="width:100%"><el-option v-for="x in employees.filter((e:any)=>e.teamId===selectedActivity?.teamId)" :key="x.id" :label="`${x.name} · ${x.position}`" :value="x.id"/></el-select></el-form-item>
+        <el-form-item v-else label="选择成员"><el-select v-model="form.participantEmployeeIds" multiple filterable style="width:100%"><el-option v-for="x in selectableParticipants" :key="x.id" :label="`${x.name} · ${x.departmentName} / ${x.teamName} · ${x.position}`" :value="x.id"/></el-select><small class="hint">{{selectedActivity?.participantScope==='department'?'当前活动允许从参与部门中选择启用成员。':'当前活动允许从参与团队中选择启用成员。'}}</small></el-form-item>
       </el-form>
       <div v-if="generated.length" class="generated">
         <div class="generated-head"><b>本次生成结果</b><el-button :icon="Download" @click="download">下载完整邀请码</el-button></div>

@@ -353,6 +353,9 @@ function migrateDatabase(db) {
     if (evaluation.targetType === 'employee' && !evaluation.targetEmployeeIds.length) evaluation.targetEmployeeIds = teamEmployeeIds
     if (!Array.isArray(evaluation.targetTeamIds)) evaluation.targetTeamIds = []
     if (!Array.isArray(evaluation.participantEmployeeIds)) evaluation.participantEmployeeIds = []
+    evaluation.participantScope = evaluation.participantScope === 'department' ? 'department' : 'team'
+    evaluation.participantTeamId ||= evaluation.teamId
+    evaluation.participantDepartmentId ||= evaluation.departmentId
     evaluation.targetMode ||= 'selected'
     if (!['team','department','custom'].includes(evaluation.employeeTargetScope)) {
       evaluation.employeeTargetScope = evaluation.targetMode === 'selected' ? 'custom' : 'team'
@@ -753,11 +756,21 @@ function getParticipantEmployees(db, evaluation) {
   const ids = new Set(uniqueStrings(evaluation.participantEmployeeIds))
   return db.employees.filter((x) => ids.has(x.id) && x.status === 'active')
 }
+function getEvaluationParticipantPool(db, evaluation) {
+  const participantScope = evaluation?.participantScope === 'department' ? 'department' : 'team'
+  const participantTeamId = evaluation?.participantTeamId || evaluation?.teamId
+  const participantDepartmentId = evaluation?.participantDepartmentId || evaluation?.departmentId
+  const activeTeamIds = new Set(db.teams.filter((team) => team.status === 'active' && (participantScope === 'department' ? team.departmentId === participantDepartmentId : team.id === participantTeamId)).map((team) => team.id))
+  return db.employees.filter((employee) => employee.status === 'active' && activeTeamIds.has(employee.teamId))
+}
 async function addVerifyCodesAndTasks(db,evaluation,options = {}) {
   const targets = getEvaluationTargets(db,evaluation)
   if (!targets.length) throw new Error('评价对象不能为空')
   const participantEmployeeIds = uniqueStrings(options.participantEmployeeIds)
   const quantity = Number(options.count || 0)
+  const participantPool = getEvaluationParticipantPool(db,evaluation)
+  const participantPoolIds = new Set(participantPool.map((employee) => employee.id))
+  if (participantEmployeeIds.some((id) => !participantPoolIds.has(id))) throw new Error('所选参与评价成员不在当前参与者范围内')
   if (participantEmployeeIds.length) {
     const alreadyBound = new Set(db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id && x.participantEmployeeId).map((x) => x.participantEmployeeId))
     const duplicated = participantEmployeeIds.find((id) => alreadyBound.has(id))
@@ -767,7 +780,7 @@ async function addVerifyCodesAndTasks(db,evaluation,options = {}) {
     }
   }
   const participants = participantEmployeeIds.length
-    ? participantEmployeeIds.map((id) => db.employees.find((x) => x.id === id && x.status === 'active')).filter(Boolean)
+    ? participantEmployeeIds.map((id) => participantPool.find((employee) => employee.id === id)).filter(Boolean)
     : Array.from({ length: quantity }, () => null)
   if (!participants.length) throw new Error('至少需要生成 1 个邀请码')
   for (const participant of participants) {
@@ -1695,6 +1708,22 @@ async function adminRoutes(context,path,method,db) {
 
     const teamEmployees = db.employees.filter((x) => x.teamId === team.id && x.status === 'active')
     const teamEmployeeIdSet = new Set(teamEmployees.map((x) => x.id))
+    const availableParticipantTeams = db.teams.filter((item) => visibleTeamIds(db,session).has(item.id) && item.status === 'active')
+    const availableParticipantTeamIds = new Set(availableParticipantTeams.map((item) => item.id))
+    const availableParticipantEmployees = scopeEmployees(db,session).filter((employee) => employee.status === 'active' && availableParticipantTeamIds.has(employee.teamId))
+    const participantScope = input.participantScope === 'department' ? 'department' : 'team'
+    const participantTeamId = normalize(input.participantTeamId) || team.id
+    const participantDepartmentId = normalize(input.participantDepartmentId) || team.departmentId
+    let participantPool = []
+    if (participantScope === 'department') {
+      const departmentTeamIds = new Set(availableParticipantTeams.filter((item) => item.departmentId === participantDepartmentId).map((item) => item.id))
+      if (!departmentTeamIds.size) return fail('请选择有权限访问的有效参与部门')
+      participantPool = availableParticipantEmployees.filter((employee) => departmentTeamIds.has(employee.teamId))
+    } else {
+      if (!availableParticipantTeamIds.has(participantTeamId)) return fail('请选择有权限访问的有效参与团队')
+      participantPool = availableParticipantEmployees.filter((employee) => employee.teamId === participantTeamId)
+    }
+    const participantPoolIds = new Set(participantPool.map((employee) => employee.id))
     const targetType = input.targetType === 'team' ? 'team' : 'employee'
     const targetMode = input.targetMode === 'selected' ? 'selected' : 'all'
     const availableTargetTeams = db.teams.filter((item) => visibleTeamIds(db,session).has(item.id) && item.status === 'active')
@@ -1725,7 +1754,7 @@ async function adminRoutes(context,path,method,db) {
 
     const participantMode = input.participantMode === 'selected' ? 'selected' : 'quantity'
     const participantEmployeeIds = participantMode === 'selected'
-      ? uniqueStrings(input.participantEmployeeIds).filter((id) => teamEmployeeIdSet.has(id))
+      ? uniqueStrings(input.participantEmployeeIds).filter((id) => participantPoolIds.has(id))
       : []
     const participantCount = participantMode === 'selected' ? participantEmployeeIds.length : Number(input.participantCount)
     if (!Number.isInteger(participantCount) || participantCount < 1 || participantCount > 200) return fail('邀请码数量必须是 1-200 的整数')
@@ -1748,17 +1777,20 @@ async function adminRoutes(context,path,method,db) {
       linkCode:generateUniqueLinkCode(db),
       teamId:team.id,departmentId:team.departmentId,status:'active',startTime:input.startTime,endTime:input.endTime,
       rules:prepareScoreRules(Array.isArray(input.rules)&&input.rules.length?input.rules:DEFAULT_RULES),rounding:input.rounding||DEFAULT_ROUNDING,
-      participantMode,participantEmployeeIds,targetType,
+      participantMode,participantScope,participantTeamId,participantDepartmentId,participantEmployeeIds,targetType,
       targetMode:targetType === 'team' ? targetMode : employeeTargetScope === 'custom' ? 'selected' : 'all',
       employeeTargetScope,targetTeamId,targetDepartmentId,targetEmployeeIds,targetTeamIds,
       excludeSelf:targetType === 'employee' && input.excludeSelf !== false,
       createdAt:nowText(),updatedAt:nowText()
     }
     db.evaluationCodes.push(evaluation)
-    const generated = await addVerifyCodesAndTasks(db,evaluation,{
-      participantEmployeeIds:participantMode==='selected'?participantEmployeeIds:[],
-      count:participantMode==='quantity'?participantCount:0
-    })
+    let generated
+    try {
+      generated = await addVerifyCodesAndTasks(db,evaluation,{
+        participantEmployeeIds:participantMode==='selected'?participantEmployeeIds:[],
+        count:participantMode==='quantity'?participantCount:0
+      })
+    } catch (error) { return fail(String(error.message || error)) }
     await saveDatabase(context,db)
     return ok({activity:activityView(db,evaluation),period,verifyCodes:generated.codes,participantCount,taskCount:generated.taskCount,targetCount:generated.targetCount})
   }
@@ -1814,7 +1846,10 @@ async function adminRoutes(context,path,method,db) {
           firstUsedAt:v.firstUsedAt,completedAt:v.completedAt
         }
       }),
-      activities:scopeEvaluations(db,session).map((x) => ({id:x.id,name:x.name,status:activityStatus(x),teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name || ''})),
+      activities:scopeEvaluations(db,session).map((x) => ({
+        id:x.id,name:x.name,status:activityStatus(x),teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name || '',
+        participantScope:x.participantScope === 'department' ? 'department' : 'team',participantTeamId:x.participantTeamId || x.teamId,participantDepartmentId:x.participantDepartmentId || x.departmentId
+      })),
       canWrite:hasPermission(session,'verify:write')
     })
   }
@@ -1825,8 +1860,12 @@ async function adminRoutes(context,path,method,db) {
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
     try { ensureEvaluationMutable(evaluation,'生成邀请码') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     const participantEmployeeIds = uniqueStrings(input.participantEmployeeIds)
+    const visibleParticipantIds = new Set(scopeEmployees(db,session).filter((employee) => employee.status === 'active').map((employee) => employee.id))
+    if (participantEmployeeIds.some((id) => !visibleParticipantIds.has(id))) return fail('所选参与评价成员不在当前数据权限范围内',403)
     const count = participantEmployeeIds.length ? 0 : Math.min(100,Math.max(1,Number(input.count)||1))
-    const generated = await addVerifyCodesAndTasks(db,evaluation,{participantEmployeeIds,count})
+    let generated
+    try { generated = await addVerifyCodesAndTasks(db,evaluation,{participantEmployeeIds,count}) }
+    catch (error) { return fail(String(error.message || error)) }
     await saveDatabase(context,db)
     return ok({codes:generated.codes,taskCount:generated.taskCount,targetCount:generated.targetCount})
   }

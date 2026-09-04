@@ -193,6 +193,41 @@ assert.ok(departmentActivity.payload.data.activity.targetEmployeeIds.includes(ba
 assert.ok(!departmentActivity.payload.data.activity.targetEmployeeIds.includes(inactiveBackendEmployee.payload.data.id))
 assert.equal(departmentActivity.payload.data.taskCount,departmentActivity.payload.data.targetCount-1)
 
+const departmentParticipantsActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'跨团队部门参与者',teamId:'team_rd',participantMode:'selected',participantScope:'department',participantDepartmentId:'dep_rd',participantEmployeeIds:['emp_001',backendEmployee.payload.data.id,inactiveBackendEmployee.payload.data.id],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_002'],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(departmentParticipantsActivity.status,200)
+assert.equal(departmentParticipantsActivity.payload.data.activity.participantScope,'department')
+assert.deepEqual(departmentParticipantsActivity.payload.data.activity.participantEmployeeIds,['emp_001',backendEmployee.payload.data.id])
+assert.equal(departmentParticipantsActivity.payload.data.participantCount,2)
+assert.equal(departmentParticipantsActivity.payload.data.taskCount,2)
+
+const departmentParticipantQuantityActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'部门参与者补充邀请码',teamId:'team_rd',participantMode:'quantity',participantCount:1,participantScope:'department',participantDepartmentId:'dep_rd',targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_002'],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(departmentParticipantQuantityActivity.status,200)
+const departmentParticipantSupplement = await call('/admin/verify-codes/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:departmentParticipantQuantityActivity.payload.data.activity.id,participantEmployeeIds:[backendEmployee.payload.data.id]}
+})
+assert.equal(departmentParticipantSupplement.status,200)
+const teamLeaderParticipantSupplementDenied = await call('/admin/verify-codes/generate',{
+  method:'POST',cookie:teamCookie,body:{evaluationCodeId:departmentParticipantQuantityActivity.payload.data.activity.id,participantEmployeeIds:[backendEmployee.payload.data.id]}
+})
+assert.equal(teamLeaderParticipantSupplementDenied.status,403)
+const departmentParticipantOutOfScope = await call('/admin/verify-codes/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:departmentParticipantQuantityActivity.payload.data.activity.id,participantEmployeeIds:[inactiveBackendEmployee.payload.data.id]}
+})
+assert.equal(departmentParticipantOutOfScope.status,403)
+
+const teamLeaderDepartmentParticipants = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:teamCookie,
+  body:{name:'团队长部门参与者边界',teamId:'team_rd',participantMode:'selected',participantScope:'department',participantDepartmentId:'dep_rd',participantEmployeeIds:['emp_001',backendEmployee.payload.data.id],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_002'],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(teamLeaderDepartmentParticipants.status,200)
+assert.deepEqual(teamLeaderDepartmentParticipants.payload.data.activity.participantEmployeeIds,['emp_001'])
+
 const customScopeActivity = await call('/admin/evaluation-activities/create-flow',{
   method:'POST',cookie:adminCookie,
   body:{name:'自定义跨团队成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_002',backendEmployee.payload.data.id],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
@@ -537,10 +572,14 @@ assert.equal(expiringEntry.status,200)
 const expiresAtMs = new Date(expiringEntry.payload.expiresAt).getTime()
 assert.ok(expiresAtMs > Date.now())
 assert.ok(expiresAtMs <= Date.now()+2_000)
-await new Promise((resolve) => setTimeout(resolve,Math.max(0,expiresAtMs-Date.now()+100)))
 env.TIMED_INVITE_SECONDS = '300'
-const expiredTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
-const expiredTimedRow = expiredTimedRows.payload.data.items.find((item) => item.id === expiringTimed.payload.data.id)
+let expiredTimedRow
+for (let attempt = 0; attempt < 12; attempt++) {
+  const expiredTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+  expiredTimedRow = expiredTimedRows.payload.data.items.find((item) => item.id === expiringTimed.payload.data.id)
+  if (expiredTimedRow?.status === 'expired') break
+  await new Promise((resolve) => setTimeout(resolve,250))
+}
 assert.equal(expiredTimedRow.status,'expired')
 assert.equal(expiredTimedRow.completedTasks,0)
 assert.equal(expiredTimedRow.remainingTasks,expiredTimedRow.totalTasks)

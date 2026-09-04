@@ -16,6 +16,10 @@ _Avoid_: Evaluation code, campaign
 An employee selected to evaluate targets in an evaluation activity.
 _Avoid_: Reviewer, user
 
+**Participant Scope**:
+The rule that selects eligible participants for one evaluation activity: one team or all active members of one department's active teams. It is independent from the activity's management team and evaluation target scope.
+_Avoid_: Evaluation target scope
+
 **Member Tag**:
 A reusable descriptive label assigned to one or more employees. A member tag never grants, revokes, or implies an account permission.
 _Avoid_: Role, permission
