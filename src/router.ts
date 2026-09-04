@@ -14,6 +14,7 @@ const EvaluationCodes = () => import('./views/admin/EvaluationCodes.vue')
 const VerifyCodes = () => import('./views/admin/VerifyCodes.vue')
 const Tasks = () => import('./views/admin/Tasks.vue')
 const Results = () => import('./views/admin/Results.vue')
+const Trends = () => import('./views/admin/Trends.vue')
 const ImportExport = () => import('./views/admin/ImportExport.vue')
 const ScoreRules = () => import('./views/admin/ScoreRules.vue')
 const Settings = () => import('./views/admin/Settings.vue')
@@ -40,6 +41,7 @@ const router = createRouter({
         { path: 'verify-codes', component: VerifyCodes, meta: { title: '邀请码' } },
         { path: 'tasks', component: Tasks, meta: { title: '评价任务' } },
         { path: 'results', component: Results, meta: { title: '评分结果' } },
+        { path: 'trends', component: Trends, meta: { title: '趋势看板' } },
         { path: 'import-export', component: ImportExport, meta: { title: '导入与导出' } },
         { path: 'settings/score-rules', component: ScoreRules, meta: { title: '评分计算规则' } },
         { path: 'settings', component: Settings, meta: { title: '系统设置' } }

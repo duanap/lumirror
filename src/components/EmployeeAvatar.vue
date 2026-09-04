@@ -7,13 +7,16 @@ const props = withDefaults(defineProps<{
   gender?: 'male' | 'female' | 'unknown'
   size?: number
   alt?: string
-}>(), { gender:'unknown', size:48, alt:'成员头像' })
+  thumbnail?: boolean
+  loading?: 'eager' | 'lazy'
+}>(), { gender:'unknown', size:48, alt:'成员头像', thumbnail:false, loading:'eager' })
 
 const preset = computed(() => avatarPresetById(props.avatar))
+const source = computed(() => props.thumbnail ? preset.value?.thumbSrc : preset.value?.src)
 </script>
 
 <template>
-  <img v-if="preset" class="employee-avatar" :src="preset.src" :alt="alt" :style="{width:`${size}px`,height:`${size}px`}"/>
+  <img v-if="preset" class="employee-avatar" :src="source" :alt="alt" :style="{width:`${size}px`,height:`${size}px`}" :loading="loading" decoding="async" :fetchpriority="loading==='eager'?'high':'auto'"/>
   <span v-else class="employee-avatar employee-avatar--empty" :style="{width:`${size}px`,height:`${size}px`}" role="img" :aria-label="alt"/>
 </template>
 

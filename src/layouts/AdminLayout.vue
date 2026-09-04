@@ -26,15 +26,16 @@ const allGroups: any[] = [
     label: '数据中心', icon: DataAnalysis,
     items: [
       { path: '/admin/dashboard', label: '数据概览', icon: DataAnalysis, permission: 'dashboard:view' },
-      { path: '/admin/results', label: '评分结果', icon: TrendCharts, permission: 'results:view', hideForMember: true }
+      { path: '/admin/results', label: '评分结果', icon: TrendCharts, permission: 'results:view', hideForMember: true },
+      { path: '/admin/trends', label: '趋势看板', icon: TrendCharts, permission: 'results:view', hideForMember: true }
     ]
   },
   {
     label: '人员与组织', icon: User,
     items: [
-      { path: '/admin/employees', label: '成员管理', icon: User, permission: 'employees:view' },
       { path: '/admin/departments', label: '部门管理', icon: OfficeBuilding, adminOnly: true },
       { path: '/admin/teams', label: '团队管理', icon: Grid, permission: 'employees:view' },
+      { path: '/admin/employees', label: '成员管理', icon: User, permission: 'employees:view' },
       { path: '/admin/users', label: '账号与权限', icon: UserFilled, adminOnly: true }
     ]
   },

@@ -107,13 +107,32 @@ try {
   schemaOne.close()
   const migratedStorage = new RelationalSqliteStorage(schemaOneFile)
   assert.ok(migratedStorage.database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'))
-  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 3)
+  assert.equal(migratedStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 4)
+  assert.ok(migratedStorage.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='member_tags'").get())
+  assert.ok(migratedStorage.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='employee_tags'").get())
   for (const table of ['evaluation_targets','evaluation_tasks','scores']) {
     const legacyTarget = migratedStorage.database.prepare(`SELECT target_type, target_id FROM ${table}`).get()
     assert.equal(legacyTarget.target_type,'employee')
     assert.equal(legacyTarget.target_id,'emp_legacy')
   }
   migratedStorage.close()
+
+  const tagSchemaThreeFile = path.join(dataDir, 'schema-three-without-tags.sqlite')
+  const tagSchemaFourStorage = new RelationalSqliteStorage(tagSchemaThreeFile)
+  await tagSchemaFourStorage.put('employee_review_db_v1',{
+    version:4,createdAt:'2026-01-01T00:00:00.000Z',updatedAt:'2026-01-01T00:00:00.000Z',
+    users:[],departments:[{id:'dep_legacy',name:'旧部门',status:'active'}],teams:[{id:'team_legacy',departmentId:'dep_legacy',name:'旧团队',status:'active'}],employees:[{id:'emp_legacy',departmentId:'dep_legacy',teamId:'team_legacy',name:'旧成员',status:'active',gender:'unknown',position:'成员'}],memberTags:[],periods:[],evaluationCodes:[],verifyCodes:[],tasks:[],scores:[],timedInvites:[],logs:[],settings:{systemName:'和光镜鉴',publicSessionMinutes:120,logRetentionDays:90}
+  })
+  tagSchemaFourStorage.close()
+  const schemaThree = new DatabaseSync(tagSchemaThreeFile)
+  schemaThree.exec('PRAGMA foreign_keys = OFF; DROP TABLE employee_tags; DROP TABLE member_tags; UPDATE app_state SET schema_version = 3 WHERE singleton = 1; PRAGMA foreign_keys = ON;')
+  schemaThree.close()
+  const migratedTagStorage = new RelationalSqliteStorage(tagSchemaThreeFile)
+  const migratedTagData = await migratedTagStorage.get('employee_review_db_v1',{type:'json'})
+  assert.deepEqual(migratedTagData.employees[0].tagIds,[])
+  assert.equal(migratedTagStorage.database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version,4)
+  assert.equal(migratedTagStorage.database.prepare('PRAGMA foreign_key_check').all().length,0)
+  migratedTagStorage.close()
 
   await writeFile(path.join(dataDir, 'employee-review-db.json'), '{"legacy":true}', { mode: 0o600 })
   running = await startServer({ includeBootstrapPassword: true })
@@ -139,6 +158,16 @@ try {
     body: { currentPassword: initialPassword, newPassword: changedPassword, confirmPassword: changedPassword }
   })
   assert.equal(passwordChange.status, 200)
+
+  const memberTag = await call(running.baseUrl, '/admin/member-tags', {
+    method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
+  })
+  assert.equal(memberTag.status, 200)
+  const taggedEmployee = await call(running.baseUrl, '/admin/employees/emp_003', {
+    method: 'PUT', cookie: adminCookie,
+    body: { name:'王敏', gender:'female', departmentId:'dep_rd', teamId:'team_rd', position:'产品经理', status:'active', avatar:'avatar_female_young_plain', tagIds:[memberTag.payload.data.id] }
+  })
+  assert.equal(taggedEmployee.status, 200)
 
   const now = Date.now()
   const created = await call(running.baseUrl, '/admin/evaluation-activities/create-flow', {
@@ -184,6 +213,20 @@ try {
   const results = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(results.status, 200)
   assert.equal(results.payload.data.items.reduce((total, item) => total + Number(item.reviewCount || 0), 0), 2)
+  const endedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
+    method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}
+  })
+  assert.equal(endedActivity.status,200)
+  const archivedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
+    method:'PUT',cookie:adminCookie,body:{status:'archived'}
+  })
+  assert.equal(archivedActivity.status,200)
+  const archivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
+  assert.deepEqual(archivedResults.payload.data.items,results.payload.data.items)
+  const archivedTrend = await call(running.baseUrl, '/admin/trends?targetType=employee&targetId=emp_002', { cookie:adminCookie })
+  assert.equal(archivedTrend.status,200)
+  assert.equal(archivedTrend.payload.data.points.length,1)
+  assert.equal(archivedTrend.payload.data.points[0].archived,true)
 
   const teamCreated = await call(running.baseUrl, '/admin/evaluation-activities/create-flow', {
     method: 'POST',
@@ -221,15 +264,17 @@ try {
 
   const database = new DatabaseSync(path.join(dataDir, 'lumirror.sqlite'))
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name)
-  for (const table of ['users', 'departments', 'teams', 'employees', 'review_periods', 'evaluation_activities', 'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'verification_codes', 'evaluation_tasks', 'scores', 'score_values', 'timed_invites', 'audit_logs', 'settings']) {
+  for (const table of ['users', 'departments', 'teams', 'employees', 'member_tags', 'employee_tags', 'review_periods', 'evaluation_activities', 'evaluation_rules', 'evaluation_participants', 'evaluation_targets', 'verification_codes', 'evaluation_tasks', 'scores', 'score_values', 'timed_invites', 'audit_logs', 'settings']) {
     assert.ok(tables.includes(table), `missing relational business table: ${table}`)
   }
   assert.ok(database.prepare('PRAGMA table_info(evaluation_rules)').all().some((column) => column.name === 'operation'), 'evaluation_rules.operation must be queryable')
-  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 3)
+  assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 4)
   assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_targets WHERE target_type = 'team'").get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_tasks WHERE target_type = 'team'").get().count, 2)
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM member_tags').get().count, 1)
+  assert.equal(database.prepare('SELECT COUNT(*) AS count FROM employee_tags').get().count, 1)
   assert.equal(database.prepare('PRAGMA foreign_key_check').all().length, 0)
   database.close()
 
@@ -240,6 +285,20 @@ try {
     body: { username: 'admin', password: changedPassword }
   })
   assert.equal(persistedLogin.status, 200)
+  const persistedEmployees = await call(running.baseUrl, '/admin/employees', { cookie:persistedLogin.cookie })
+  assert.equal(persistedEmployees.status, 200)
+  assert.equal(persistedEmployees.payload.data.items.find((item) => item.id === 'emp_003').tags[0].name, '服务器标签')
+  const persistedArchivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie:persistedLogin.cookie })
+  assert.deepEqual(persistedArchivedResults.payload.data.items,results.payload.data.items)
+  const persistedArchivedTrend = await call(running.baseUrl, '/admin/trends?targetType=employee&targetId=emp_002', { cookie:persistedLogin.cookie })
+  assert.deepEqual(persistedArchivedTrend.payload.data.points,archivedTrend.payload.data.points)
+  const unarchivedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
+    method:'PUT',cookie:persistedLogin.cookie,body:{status:'active'}
+  })
+  assert.equal(unarchivedActivity.status,200)
+  assert.equal(unarchivedActivity.payload.data.status,'ended')
+  const unarchivedResults = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie:persistedLogin.cookie })
+  assert.deepEqual(unarchivedResults.payload.data.items,results.payload.data.items)
 
   console.log('Production relational SQLite smoke test passed: schema-v1 upgrade, rule operation column, bootstrap, restart persistence, atomic writes and concurrent scoring')
 } finally {

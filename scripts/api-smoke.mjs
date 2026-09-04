@@ -16,7 +16,7 @@ async function call(path,{method='GET',token,cookie,body}={}) {
 }
 
 const health = await call('/health')
-assert.equal(health.payload.data.version,'1.4.1')
+assert.equal(health.payload.data.version,'1.5.0')
 assert.equal(health.payload.data.ready,true)
 
 const productionHealth = await onRequest({
@@ -64,6 +64,7 @@ const employeeList = await call('/admin/employees?teamId=team_rd&status=active',
 assert.equal(employeeList.status,200)
 assert.ok(employeeList.payload.data.items.length >= 5)
 assert.ok(employeeList.payload.data.items.every((x) => x.teamId === 'team_rd'))
+assert.ok(employeeList.payload.data.items.every((x) => Array.isArray(x.tagIds) && Array.isArray(x.tags)))
 const avatarUpdate = await call('/admin/employees/emp_003',{
   method:'PUT',cookie:adminCookie,
   body:{name:'王敏',gender:'female',departmentId:'dep_rd',teamId:'team_rd',position:'产品经理',status:'active',avatar:'avatar_female_young_plain'}
@@ -76,6 +77,59 @@ const mismatchedAvatarUpdate = await call('/admin/employees/emp_001',{
 })
 assert.equal(mismatchedAvatarUpdate.status,200)
 assert.equal(mismatchedAvatarUpdate.payload.data.avatar,'')
+
+const coreTag = await call('/admin/member-tags',{
+  method:'POST',cookie:adminCookie,body:{name:'骨干'}
+})
+assert.equal(coreTag.status,200)
+const leadTag = await call('/admin/member-tags',{
+  method:'POST',cookie:adminCookie,body:{name:'组长'}
+})
+assert.equal(leadTag.status,200)
+const duplicateTag = await call('/admin/member-tags',{
+  method:'POST',cookie:adminCookie,body:{name:' 骨干 '}
+})
+assert.equal(duplicateTag.status,409)
+const taggedEmployee = await call('/admin/employees/emp_003',{
+  method:'PUT',cookie:adminCookie,
+  body:{name:'王敏',gender:'female',departmentId:'dep_rd',teamId:'team_rd',position:'产品经理',status:'active',avatar:'avatar_female_young_plain',tagIds:[coreTag.payload.data.id,leadTag.payload.data.id]}
+})
+assert.equal(taggedEmployee.status,200)
+assert.deepEqual(taggedEmployee.payload.data.tagIds,[coreTag.payload.data.id,leadTag.payload.data.id])
+const createdEmployee = await call('/admin/employees',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'标签测试成员',gender:'male',departmentId:'dep_rd',teamId:'team_rd',position:'工程师',status:'active',avatar:'avatar_male_young_plain',tagIds:[coreTag.payload.data.id]}
+})
+assert.equal(createdEmployee.status,200)
+assert.deepEqual(createdEmployee.payload.data.tagIds,[coreTag.payload.data.id])
+const renamedTag = await call(`/admin/member-tags/${leadTag.payload.data.id}`,{
+  method:'PUT',cookie:adminCookie,body:{name:'负责人'}
+})
+assert.equal(renamedTag.status,200)
+const deletedTag = await call(`/admin/member-tags/${leadTag.payload.data.id}`,{method:'DELETE',cookie:adminCookie})
+assert.equal(deletedTag.status,200)
+assert.equal(deletedTag.payload.data.detachedCount,1)
+const employeesAfterTagDelete = await call('/admin/employees',{cookie:adminCookie})
+const preservedEmployee = employeesAfterTagDelete.payload.data.items.find((item) => item.id === 'emp_003')
+assert.ok(preservedEmployee)
+assert.deepEqual(preservedEmployee.tagIds,[coreTag.payload.data.id])
+assert.equal(preservedEmployee.tags[0].name,'骨干')
+
+const backendTeam = await call('/admin/teams',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'后端组',departmentId:'dep_rd',leader:'',sort:3,status:'active'}
+})
+assert.equal(backendTeam.status,200)
+const backendEmployee = await call('/admin/employees',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'后端成员',gender:'male',departmentId:'dep_rd',teamId:backendTeam.payload.data.id,position:'后端工程师',status:'active',avatar:'',tagIds:[]}
+})
+assert.equal(backendEmployee.status,200)
+const inactiveBackendEmployee = await call('/admin/employees',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'停用成员',gender:'female',departmentId:'dep_rd',teamId:backendTeam.payload.data.id,position:'后端工程师',status:'inactive',avatar:'',tagIds:[]}
+})
+assert.equal(inactiveBackendEmployee.status,200)
 
 const createdUser = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
@@ -91,6 +145,10 @@ const teamPasswordChange = await call('/admin/change-password',{
   body:{currentPassword:'teamlead123',newPassword:'teamlead1234',confirmPassword:'teamlead1234'}
 })
 assert.equal(teamPasswordChange.status,200)
+const forbiddenTagRename = await call(`/admin/member-tags/${coreTag.payload.data.id}`,{
+  method:'PUT',cookie:teamCookie,body:{name:'越权重命名'}
+})
+assert.equal(forbiddenTagRename.status,403)
 
 const directUser = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
@@ -111,6 +169,70 @@ assert.ok(scopedEmployees.payload.data.items.every((x) => x.teamId === 'team_rd'
 
 const start = new Date(Date.now()-60_000).toISOString()
 const end = new Date(Date.now()+86_400_000).toISOString()
+
+const boundedPeriod = await call('/admin/periods',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'范围约束测试周期',startTime:new Date(Date.now()-3_600_000).toISOString(),endTime:new Date(Date.now()+2*86_400_000).toISOString(),status:'active'}
+})
+assert.equal(boundedPeriod.status,200)
+const singleTeamActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'单团队成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(singleTeamActivity.status,200)
+assert.equal(singleTeamActivity.payload.data.activity.employeeTargetScope,'team')
+assert.equal(singleTeamActivity.payload.data.taskCount,singleTeamActivity.payload.data.targetCount-1)
+
+const departmentActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'跨团队部门成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'department',targetDepartmentId:'dep_rd',excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(departmentActivity.status,200)
+assert.equal(departmentActivity.payload.data.activity.employeeTargetScope,'department')
+assert.ok(departmentActivity.payload.data.activity.targetEmployeeIds.includes(backendEmployee.payload.data.id))
+assert.ok(!departmentActivity.payload.data.activity.targetEmployeeIds.includes(inactiveBackendEmployee.payload.data.id))
+assert.equal(departmentActivity.payload.data.taskCount,departmentActivity.payload.data.targetCount-1)
+
+const customScopeActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'自定义跨团队成员评价',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_002',backendEmployee.payload.data.id],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(customScopeActivity.status,200)
+assert.deepEqual(customScopeActivity.payload.data.activity.targetEmployeeIds,['emp_002',backendEmployee.payload.data.id])
+assert.equal(customScopeActivity.payload.data.taskCount,2)
+
+const includeSelfActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'允许自评测试',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:['emp_001',backendEmployee.payload.data.id],excludeSelf:false,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(includeSelfActivity.status,200)
+assert.equal(includeSelfActivity.payload.data.taskCount,2)
+
+const beforePeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'周期前越界',teamId:'team_rd',participantMode:'quantity',participantCount:1,targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:new Date(Date.now()-7_200_000).toISOString(),endTime:end}
+})
+assert.equal(beforePeriodActivity.status,400)
+const afterPeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'周期后越界',teamId:'team_rd',participantMode:'quantity',participantCount:1,targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:new Date(Date.now()+3*86_400_000).toISOString()}
+})
+assert.equal(afterPeriodActivity.status,400)
+const expiredPeriod = await call('/admin/periods',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'已结束周期',startTime:new Date(Date.now()-3*86_400_000).toISOString(),endTime:new Date(Date.now()-2*86_400_000).toISOString(),status:'active'}
+})
+assert.equal(expiredPeriod.status,200)
+const expiredPeriodActivity = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:adminCookie,
+  body:{name:'已结束周期活动',teamId:'team_rd',participantMode:'quantity',participantCount:1,targetType:'employee',employeeTargetScope:'team',targetTeamId:'team_rd',periodMode:'existing',periodId:expiredPeriod.payload.data.id,startTime:new Date(Date.now()-3*86_400_000+1000).toISOString(),endTime:new Date(Date.now()-2*86_400_000-1000).toISOString()}
+})
+assert.equal(expiredPeriodActivity.status,400)
+const scopedTargetDenied = await call('/admin/evaluation-activities/create-flow',{
+  method:'POST',cookie:teamCookie,
+  body:{name:'越权目标成员',teamId:'team_rd',participantMode:'selected',participantEmployeeIds:['emp_001'],targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:[backendEmployee.payload.data.id],excludeSelf:true,periodMode:'existing',periodId:boundedPeriod.payload.data.id,startTime:start,endTime:end}
+})
+assert.equal(scopedTargetDenied.status,400)
 
 const createdMember = await call('/admin/users',{
   method:'POST',cookie:adminCookie,
@@ -246,6 +368,70 @@ assert.equal(teamResults.status,200)
 assert.equal(teamResults.payload.data.targetType,'team')
 assert.equal(teamResults.payload.data.items.length,2)
 assert.ok(teamResults.payload.data.items.every((item) => item.targetType === 'team' && item.reviewCount === 1))
+const singleTeamTrend = await call('/admin/trends?targetType=team&targetId=team_pm',{cookie:adminCookie})
+assert.equal(singleTeamTrend.status,200)
+assert.equal(singleTeamTrend.payload.data.points.length,1)
+const emptyTrendTeam = await call('/admin/teams',{method:'POST',cookie:adminCookie,body:{name:'空趋势团队',departmentId:'dep_rd',leader:'',sort:9,status:'active'}})
+assert.equal(emptyTrendTeam.status,200)
+const noTeamTrend = await call(`/admin/trends?targetType=team&targetId=${encodeURIComponent(emptyTrendTeam.payload.data.id)}`,{cookie:adminCookie})
+assert.deepEqual(noTeamTrend.payload.data.points,[])
+
+async function createTrendActivity({name,targetType,targetId,totals,endOffsetDays}) {
+  const trendNow = Date.now()
+  const body = targetType === 'team'
+    ? {name,teamId:'team_rd',participantMode:'quantity',participantCount:2,targetType:'team',targetMode:'selected',targetTeamIds:[targetId],startTime:new Date(trendNow-60_000).toISOString(),endTime:new Date(trendNow+endOffsetDays*86_400_000).toISOString()}
+    : {name,teamId:'team_rd',participantMode:'quantity',participantCount:2,targetType:'employee',employeeTargetScope:'custom',targetEmployeeIds:[targetId],excludeSelf:true,startTime:new Date(trendNow-60_000).toISOString(),endTime:new Date(trendNow+endOffsetDays*86_400_000).toISOString()}
+  const activity = await call('/admin/evaluation-activities/create-flow',{method:'POST',cookie:adminCookie,body})
+  assert.equal(activity.status,200)
+  for (const [index,verify] of activity.payload.data.verifyCodes.entries()) {
+    const entry = await call('/public/verify-entry',{method:'POST',body:{evaluationCode:activity.payload.data.activity.linkCode,verifyCode:verify.code}})
+    assert.equal(entry.status,200)
+    const task = await call('/public/current-task',{token:entry.payload.token})
+    assert.equal(task.status,200)
+    const score = totals[index]
+    const submitted = await call('/public/submit-score',{method:'POST',token:entry.payload.token,body:{taskId:task.payload.data.id,scores:{ability:score,attitude:score,collaboration:score}}})
+    assert.equal(submitted.status,200)
+  }
+  return activity.payload.data.activity
+}
+
+const employeeTrendFirst = await createTrendActivity({name:'员工趋势第一期',targetType:'employee',targetId:'emp_004',totals:[80,90],endOffsetDays:5})
+const employeeTrendEnded = await call(`/admin/evaluation-codes/${employeeTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}})
+assert.equal(employeeTrendEnded.status,200)
+const employeeTrendArchived = await call(`/admin/evaluation-codes/${employeeTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{status:'archived'}})
+assert.equal(employeeTrendArchived.status,200)
+const singleEmployeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:adminCookie})
+assert.deepEqual(singleEmployeeTrend.payload.data.points.map((point) => point.total),[85])
+const employeeTrendSecond = await createTrendActivity({name:'员工趋势第二期',targetType:'employee',targetId:'emp_004',totals:[91,99],endOffsetDays:6})
+const employeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:adminCookie})
+assert.equal(employeeTrend.status,200)
+assert.deepEqual(employeeTrend.payload.data.points.map((point) => point.total),[85,95])
+assert.equal(employeeTrend.payload.data.points[0].archived,true)
+const employeeTrendRange = await call(`/admin/trends?targetType=employee&targetId=emp_004&startTime=${encodeURIComponent(employeeTrendSecond.endTime)}`,{cookie:adminCookie})
+assert.equal(employeeTrendRange.status,200)
+assert.deepEqual(employeeTrendRange.payload.data.points.map((point) => point.total),[95])
+const noEmployeeTrend = await call('/admin/trends?targetType=employee&targetId=emp_005',{cookie:adminCookie})
+assert.equal(noEmployeeTrend.status,200)
+assert.deepEqual(noEmployeeTrend.payload.data.points,[])
+
+const teamTrendFirst = await createTrendActivity({name:'团队趋势第一期',targetType:'team',targetId:backendTeam.payload.data.id,totals:[80,90],endOffsetDays:5})
+const teamTrendEnded = await call(`/admin/evaluation-codes/${teamTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}})
+assert.equal(teamTrendEnded.status,200)
+const teamTrendArchived = await call(`/admin/evaluation-codes/${teamTrendFirst.id}`,{method:'PUT',cookie:adminCookie,body:{status:'archived'}})
+assert.equal(teamTrendArchived.status,200)
+await createTrendActivity({name:'团队趋势第二期',targetType:'team',targetId:backendTeam.payload.data.id,totals:[91,99],endOffsetDays:6})
+const teamTrend = await call(`/admin/trends?targetType=team&targetId=${encodeURIComponent(backendTeam.payload.data.id)}`,{cookie:adminCookie})
+assert.equal(teamTrend.status,200)
+assert.deepEqual(teamTrend.payload.data.points.map((point) => point.total),[85,95])
+assert.ok(teamTrend.payload.data.points.every((point) => typeof point.reviewCount === 'number'))
+const trendOptions = await call('/admin/trends/options',{cookie:adminCookie})
+assert.equal(trendOptions.status,200)
+assert.ok(trendOptions.payload.data.employees.some((employee) => employee.id === 'emp_004'))
+assert.ok(trendOptions.payload.data.teams.some((team) => team.id === backendTeam.payload.data.id))
+const scopedTrendDenied = await call(`/admin/trends?targetType=team&targetId=${encodeURIComponent(backendTeam.payload.data.id)}`,{cookie:teamCookie})
+assert.equal(scopedTrendDenied.status,403)
+const memberTrendDenied = await call('/admin/trends?targetType=employee&targetId=emp_004',{cookie:memberCookie})
+assert.equal(memberTrendDenied.status,403)
 
 const customRules = [
   {id:'quality',name:'交付质量',min:60,max:99,weight:100,operation:'add',enabled:true},
@@ -302,10 +488,16 @@ const timed = await call('/admin/timed-invites/generate',{
 })
 assert.equal(timed.status,200)
 assert.match(timed.payload.data.linkCode,/^\d{8}$/)
+const unusedTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+const unusedTimedRow = unusedTimedRows.payload.data.items.find((item) => item.id === timed.payload.data.id)
+assert.equal(unusedTimedRow.status,'unused')
+assert.equal(unusedTimedRow.completedTasks,0)
+assert.equal(unusedTimedRow.totalTasks,timed.payload.data.taskCount)
 const timedEntry = await call('/public/timed-entry',{method:'POST',body:{linkCode:timed.payload.data.linkCode}})
 assert.equal(timedEntry.status,200)
 assert.ok(timedEntry.payload.expiresAt)
 let timedRemaining = timedEntry.payload.remaining
+let checkedPartialTimedProgress = false
 while (timedRemaining > 0) {
   const task = await call('/public/current-task',{token:timedEntry.payload.token})
   assert.equal(task.status,200)
@@ -317,9 +509,98 @@ while (timedRemaining > 0) {
   })
   assert.equal(submit.status,200)
   timedRemaining = submit.payload.data.remaining
+  if (!checkedPartialTimedProgress && timedRemaining > 0) {
+    const partialTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+    const partialTimedRow = partialTimedRows.payload.data.items.find((item) => item.id === timed.payload.data.id)
+    assert.equal(partialTimedRow.status,'in_progress')
+    assert.equal(partialTimedRow.completedTasks,1)
+    assert.equal(partialTimedRow.remainingTasks,partialTimedRow.totalTasks-1)
+    checkedPartialTimedProgress = true
+  }
 }
+assert.ok(checkedPartialTimedProgress)
+const completedTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+const completedTimedRow = completedTimedRows.payload.data.items.find((item) => item.id === timed.payload.data.id)
+assert.equal(completedTimedRow.status,'completed')
+assert.equal(completedTimedRow.completedTasks,completedTimedRow.totalTasks)
+assert.equal(completedTimedRow.remainingTasks,0)
 const timedReuse = await call('/public/timed-entry',{method:'POST',body:{linkCode:timed.payload.data.linkCode}})
 assert.equal(timedReuse.status,404)
+
+const expiringTimed = await call('/admin/timed-invites/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id}
+})
+assert.equal(expiringTimed.status,200)
+env.TIMED_INVITE_SECONDS = '1'
+const expiringEntry = await call('/public/timed-entry',{method:'POST',body:{linkCode:expiringTimed.payload.data.linkCode}})
+assert.equal(expiringEntry.status,200)
+const expiresAtMs = new Date(expiringEntry.payload.expiresAt).getTime()
+assert.ok(expiresAtMs > Date.now())
+assert.ok(expiresAtMs <= Date.now()+2_000)
+await new Promise((resolve) => setTimeout(resolve,Math.max(0,expiresAtMs-Date.now()+100)))
+env.TIMED_INVITE_SECONDS = '300'
+const expiredTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+const expiredTimedRow = expiredTimedRows.payload.data.items.find((item) => item.id === expiringTimed.payload.data.id)
+assert.equal(expiredTimedRow.status,'expired')
+assert.equal(expiredTimedRow.completedTasks,0)
+assert.equal(expiredTimedRow.remainingTasks,expiredTimedRow.totalTasks)
+
+const archiveBaseline = {
+  results:await call(`/admin/results?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  tasks:await call(`/admin/tasks?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  verifies:await call(`/admin/verify-codes?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  timed:await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+}
+const prematureArchive = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{status:'archived'}
+})
+assert.equal(prematureArchive.status,409)
+const endActivity = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}
+})
+assert.equal(endActivity.status,200)
+assert.equal(endActivity.payload.data.status,'ended')
+const archivedActivity = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{status:'archived'}
+})
+assert.equal(archivedActivity.status,200)
+assert.equal(archivedActivity.payload.data.status,'archived')
+const archivedList = await call('/admin/evaluation-codes',{cookie:adminCookie})
+assert.equal(archivedList.payload.data.items.find((item) => item.id === created.payload.data.activity.id).status,'archived')
+const archivedSnapshot = {
+  results:await call(`/admin/results?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  tasks:await call(`/admin/tasks?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  verifies:await call(`/admin/verify-codes?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie}),
+  timed:await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+}
+assert.deepEqual(archivedSnapshot.results.payload.data.items,archiveBaseline.results.payload.data.items)
+assert.equal(archivedSnapshot.tasks.payload.data.items.length,archiveBaseline.tasks.payload.data.items.length)
+assert.equal(archivedSnapshot.verifies.payload.data.items.length,archiveBaseline.verifies.payload.data.items.length)
+assert.equal(archivedSnapshot.timed.payload.data.items.length,archiveBaseline.timed.payload.data.items.length)
+const archivedGenerate = await call('/admin/verify-codes/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id,count:1}
+})
+assert.equal(archivedGenerate.status,409)
+const archivedTaskSync = await call('/admin/tasks/generate',{
+  method:'POST',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id}
+})
+assert.equal(archivedTaskSync.status,409)
+const archivedRules = await call('/admin/settings/score-rules',{method:'GET',cookie:adminCookie})
+const archivedRuleWrite = await call('/admin/settings/score-rules',{
+  method:'PUT',cookie:adminCookie,body:{evaluationCodeId:created.payload.data.activity.id,rules:archivedRules.payload.data.rules,rounding:archivedRules.payload.data.rounding}
+})
+assert.equal(archivedRuleWrite.status,409)
+const archivedUnused = archivedSnapshot.verifies.payload.data.items.find((item) => item.status === 'unused')
+assert.ok(archivedUnused)
+const archivedDeleteVerify = await call(`/admin/verify-codes/${archivedUnused.id}`,{method:'DELETE',cookie:adminCookie})
+assert.equal(archivedDeleteVerify.status,409)
+const restoredActivity = await call(`/admin/evaluation-codes/${created.payload.data.activity.id}`,{
+  method:'PUT',cookie:adminCookie,body:{status:'active'}
+})
+assert.equal(restoredActivity.status,200)
+assert.equal(restoredActivity.payload.data.status,'ended')
+const restoredResults = await call(`/admin/results?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
+assert.deepEqual(restoredResults.payload.data.items,archiveBaseline.results.payload.data.items)
 
 const disposable = await call('/admin/evaluation-activities/create-flow',{
   method:'POST',cookie:adminCookie,
@@ -342,14 +623,6 @@ const removed = await call('/admin/batch',{
 })
 assert.equal(removed.status,200)
 assert.equal(removed.payload.data.successCount,1)
-
-const batchStatus = await call('/admin/batch',{
-  method:'POST',cookie:adminCookie,
-  body:{resource:'evaluation-codes',action:'status',ids:[created.payload.data.activity.id],status:'archived'}
-})
-assert.equal(batchStatus.status,200)
-assert.equal(batchStatus.payload.data.successCount,1)
-assert.equal(batchStatus.payload.data.failureCount,0)
 
 const failedBatch = await call('/admin/batch',{
   method:'POST',cookie:adminCookie,
@@ -374,6 +647,8 @@ assert.equal(cleanup.status,200)
 const logs = await call('/admin/logs?limit=10',{cookie:adminCookie})
 assert.equal(logs.status,200)
 assert.ok(logs.payload.data.items.length >= 1)
+assert.ok(logs.payload.data.items.some((item) => item.action === 'evaluation.archive'))
+assert.ok(logs.payload.data.items.some((item) => item.action === 'evaluation.unarchive'))
 const badImport = await call('/admin/import/json',{method:'POST',cookie:adminCookie,body:{data:{employees:[]}}})
 assert.equal(badImport.status,400)
 assert.match(badImport.payload.message,/缺少|结构无效/)

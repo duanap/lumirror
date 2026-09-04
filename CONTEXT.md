@@ -16,6 +16,10 @@ _Avoid_: Evaluation code, campaign
 An employee selected to evaluate targets in an evaluation activity.
 _Avoid_: Reviewer, user
 
+**Member Tag**:
+A reusable descriptive label assigned to one or more employees. A member tag never grants, revokes, or implies an account permission.
+_Avoid_: Role, permission
+
 **Evaluation Target**:
 An employee or team selected to receive evaluations in one evaluation activity. Every activity uses exactly one target type.
 _Avoid_: Reviewee, subject
@@ -23,6 +27,10 @@ _Avoid_: Reviewee, subject
 **Target Employee**:
 An employee used as an evaluation target in a member-target activity.
 _Avoid_: Reviewee
+
+**Employee Target Scope**:
+The rule that selects target employees for a member-target activity: one team, one department's active teams, or an explicit member list. It is independent from the participant team.
+_Avoid_: Department evaluation
 
 **Target Team**:
 A team used as an evaluation target in a team-target activity. Its result represents the team as a whole, not an average calculated from its members' separate results.
@@ -51,3 +59,15 @@ _Avoid_: Calculation type, positive/negative score
 **Timed Invite**:
 A single-use entry link whose five-minute lifetime starts on first opening.
 _Avoid_: Temporary code, expiring activity
+
+**Timed Invite Progress**:
+The completed, total, and remaining evaluation tasks associated with one timed invite.
+_Avoid_: Link usage count
+
+**Evaluation Archive**:
+A read-only administrative state for an ended evaluation activity. Archiving hides an activity from the main list without deleting its rules, tasks, invites, scores, or audit history.
+_Avoid_: Deletion, end status
+
+**Score Trend Point**:
+The average total score for one evaluation target in one evaluation activity. Team trend points use only team-target activities and never average employee-target scores.
+_Avoid_: Team average

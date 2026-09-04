@@ -1,7 +1,7 @@
-// Employee Anonymous Review - API Runtime v1.4.1
+// Employee Anonymous Review - API Runtime v1.5.0
 // Single-file runtime entry for maximum EdgeOne compatibility.
 
-const RUNTIME_VERSION = '1.4.1'
+const RUNTIME_VERSION = '1.5.0'
 const DATABASE_KEY = 'employee_review_db_v1'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -47,6 +47,15 @@ function normalize(value) { return String(value || '').trim() }
 function normalizeEmployeeAvatar(value, gender) {
   const avatar = normalize(value)
   return AVATAR_PRESET_GENDERS[avatar] === gender ? avatar : ''
+}
+function normalizeMemberTagName(value) {
+  const name = normalize(value).replace(/\s+/g,' ')
+  if (!name || name.length > 20) throw httpError('标签名称需为 1-20 个字符')
+  return name
+}
+function resolveMemberTagIds(db, values) {
+  const validIds = new Set((db.memberTags || []).map((tag) => tag.id))
+  return uniqueStrings(values).filter((id) => validIds.has(id))
 }
 function nowText() { return new Date().toISOString() }
 function randomId(prefix = 'id') {
@@ -210,6 +219,7 @@ async function createSeedDatabase(context) {
       { id:'team_pm', name:'产品团队', departmentId:'dep_product', leader:'王敏', sort:2, status:'active' }
     ],
     employees,
+    memberTags: [],
     periods: [{ id:'period_demo', name:'2026年第三季度', startTime:'2026-07-01T00:00:00+08:00', endTime:'2026-09-30T23:59:59+08:00', status:'active', anonymous:true, allowRepeat:false, allowModify:false, createdAt:now }],
     evaluationCodes: [{
       id:evaluationId, code:evaluationCode, linkCode:inviteLinkCode, name:'研发团队匿名反馈', periodId:'period_demo',
@@ -266,8 +276,29 @@ function expireTimedInvites(db) {
   }
 }
 
+function timedInviteView(db, invite) {
+  const verify = db.verifyCodes.find((item) => item.id === invite.verifyCodeId)
+  if (verify) syncVerifyProgress(db,verify)
+  const tasks = db.tasks.filter((task) => task.verifyCodeId === invite.verifyCodeId)
+  const totalTasks = tasks.length
+  const completedTasks = tasks.filter((task) => task.status === 'submitted').length
+  const remainingTasks = Math.max(0,totalTasks-completedTasks)
+  const expired = Boolean(invite.expiresAt && parseTime(invite.expiresAt) <= Date.now())
+  const status = totalTasks > 0 && completedTasks === totalTasks
+    ? 'completed'
+    : expired
+      ? 'expired'
+      : invite.firstOpenedAt
+        ? 'in_progress'
+        : 'unused'
+  return {
+    ...invite,status,statusLabel:status==='completed'?'已完成':status==='expired'?'已过期':status==='in_progress'?'评价中':'未开始',
+    totalTasks,completedTasks,remainingTasks,allCompleted:totalTasks > 0 && remainingTasks === 0
+  }
+}
+
 function migrateDatabase(db) {
-  const arrays = ['users','admins','departments','teams','employees','periods','evaluationCodes','verifyCodes','tasks','scores','timedInvites','logs']
+  const arrays = ['users','admins','departments','teams','employees','memberTags','periods','evaluationCodes','verifyCodes','tasks','scores','timedInvites','logs']
   for (const key of arrays) if (!Array.isArray(db[key])) db[key] = []
   if (!db.users.length && db.admins.length) {
     db.users = db.admins.map((item) => ({
@@ -292,9 +323,23 @@ function migrateDatabase(db) {
     if (user.username === 'admin' && user.salt === 'review_admin_v1') user.mustChangePassword = true
     user.mustChangePassword = Boolean(user.mustChangePassword)
   }
+  const seenTagIds = new Set()
+  const seenTagNames = new Set()
+  db.memberTags = db.memberTags.filter((tag) => {
+    tag.id = normalize(tag.id) || randomId('tag')
+    tag.name = normalize(tag.name).replace(/\s+/g,' ')
+    const key = tag.name.toLocaleLowerCase('zh-CN')
+    if (!tag.name || tag.name.length > 20 || seenTagIds.has(tag.id) || seenTagNames.has(key)) return false
+    seenTagIds.add(tag.id)
+    seenTagNames.add(key)
+    tag.createdAt ||= nowText()
+    tag.updatedAt ||= tag.createdAt
+    return true
+  })
   for (const employee of db.employees) {
     delete employee.employeeNo
     delete employee.phone
+    employee.tagIds = resolveMemberTagIds(db,employee.tagIds)
   }
   for (const evaluation of db.evaluationCodes) {
     evaluation.rules = Array.isArray(evaluation.rules) && evaluation.rules.length ? evaluation.rules : copyJson(DEFAULT_RULES)
@@ -309,6 +354,11 @@ function migrateDatabase(db) {
     if (!Array.isArray(evaluation.targetTeamIds)) evaluation.targetTeamIds = []
     if (!Array.isArray(evaluation.participantEmployeeIds)) evaluation.participantEmployeeIds = []
     evaluation.targetMode ||= 'selected'
+    if (!['team','department','custom'].includes(evaluation.employeeTargetScope)) {
+      evaluation.employeeTargetScope = evaluation.targetMode === 'selected' ? 'custom' : 'team'
+    }
+    evaluation.targetTeamId ||= evaluation.teamId
+    evaluation.targetDepartmentId ||= evaluation.departmentId
     evaluation.linkCode ||= generateUniqueLinkCode(db)
   }
   const evaluationById = new Map(db.evaluationCodes.map((evaluation) => [evaluation.id,evaluation]))
@@ -567,13 +617,23 @@ function activityStatus(evaluation) {
   if (Number.isFinite(end) && now > end) return 'ended'
   return 'active'
 }
+function evaluationHasEnded(evaluation) {
+  const end = parseTime(evaluation?.endTime)
+  return Number.isFinite(end) && Date.now() > end
+}
+function ensureEvaluationMutable(evaluation, action = '执行该操作') {
+  if (evaluation?.status === 'archived') throw httpError(`已归档活动为只读状态，不能${action}`,409,'EVALUATION_ARCHIVED')
+}
 function enrichEmployees(db) {
   const departments = new Map(db.departments.map((x) => [x.id,x]))
   const teams = new Map(db.teams.map((x) => [x.id,x]))
+  const tags = new Map((db.memberTags || []).map((tag) => [tag.id,tag]))
   return db.employees.map((e) => ({
     ...e,
     departmentName:departments.get(e.departmentId)?.name || '',
-    teamName:teams.get(e.teamId)?.name || ''
+    teamName:teams.get(e.teamId)?.name || '',
+    tagIds:resolveMemberTagIds(db,e.tagIds),
+    tags:resolveMemberTagIds(db,e.tagIds).map((id) => tags.get(id)).filter(Boolean)
   }))
 }
 function computeTotal(scores,rules,rounding) {
@@ -625,6 +685,7 @@ function activityView(db,evaluation) {
   return {
     ...evaluation,
     status:activityStatus(evaluation),
+    lifecycleStatus:evaluation.status,
     periodName:db.periods.find((p) => p.id === evaluation.periodId)?.name || '',
     teamName:db.teams.find((t) => t.id === evaluation.teamId)?.name || '',
     participantCount:verifies.length,
@@ -829,6 +890,15 @@ function mutateEvaluationStatus(db, session, id, status) {
   if (!['active','disabled','archived'].includes(status)) throw httpError('活动状态无效')
   const evaluation = db.evaluationCodes.find((x) => x.id === id)
   if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('评价活动不存在或无权编辑',404)
+  const previousStatus = evaluation.status
+  if (status === 'archived' && previousStatus !== 'archived') {
+    if (!evaluationHasEnded(evaluation)) throw httpError('只有已经结束的评价活动可以归档',409,'EVALUATION_NOT_ENDED')
+    appendLog(db,session,'evaluation.archive',{evaluationId:evaluation.id,name:evaluation.name})
+  } else if (previousStatus === 'archived' && status !== 'active') {
+    throw httpError('已归档活动只能先恢复归档',409,'EVALUATION_ARCHIVED')
+  } else if (previousStatus === 'archived' && status === 'active') {
+    appendLog(db,session,'evaluation.unarchive',{evaluationId:evaluation.id,name:evaluation.name})
+  }
   evaluation.status = status
   evaluation.updatedAt = nowText()
 }
@@ -836,6 +906,7 @@ function mutateEvaluationStatus(db, session, id, status) {
 function deleteEvaluation(db, session, id) {
   const evaluation = db.evaluationCodes.find((x) => x.id === id)
   if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('评价活动不存在或无权删除',404)
+  ensureEvaluationMutable(evaluation,'删除')
   const verifyIds = new Set(db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id).map((x) => x.id))
   db.tasks = db.tasks.filter((x) => x.evaluationCodeId !== evaluation.id && !verifyIds.has(x.verifyCodeId))
   db.verifyCodes = db.verifyCodes.filter((x) => x.evaluationCodeId !== evaluation.id)
@@ -848,6 +919,7 @@ function deleteVerifyCode(db, session, id) {
   const verify = db.verifyCodes.find((x) => x.id === id)
   const evaluation = db.evaluationCodes.find((x) => x.id === verify?.evaluationCodeId)
   if (!verify || !canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('邀请码不存在或无权删除',404)
+  ensureEvaluationMutable(evaluation,'删除邀请码')
   if (db.tasks.some((x) => x.verifyCodeId === verify.id && x.status === 'submitted')) throw httpError('该邀请码已有提交记录，不能删除',409)
   db.tasks = db.tasks.filter((x) => x.verifyCodeId !== verify.id)
   db.timedInvites = db.timedInvites.filter((x) => x.verifyCodeId !== verify.id)
@@ -858,6 +930,7 @@ function deleteTask(db, session, id) {
   const task = db.tasks.find((x) => x.id === id)
   const evaluation = db.evaluationCodes.find((x) => x.id === task?.evaluationCodeId)
   if (!task || !canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) throw httpError('任务不存在或无权删除',404)
+  ensureEvaluationMutable(evaluation,'删除任务')
   if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) throw httpError('已提交任务不能删除',409)
   db.tasks = db.tasks.filter((x) => x.id !== task.id)
   const verify = db.verifyCodes.find((x) => x.id === task.verifyCodeId)
@@ -891,6 +964,10 @@ function publicSessionSeconds(context, db) {
   const fallback = Number(getEnv(context,'PUBLIC_SESSION_SECONDS','7200'))
   return Number.isFinite(fallback) && fallback > 0 ? fallback : 7200
 }
+function timedInviteLifetimeSeconds(context) {
+  const seconds = Number(getEnv(context,'TIMED_INVITE_SECONDS','300'))
+  return Number.isFinite(seconds) && seconds >= 1 && seconds <= 3600 ? seconds : 300
+}
 
 function isPlainObject(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)) }
 function assertImportArray(data, key, max) {
@@ -903,11 +980,11 @@ function assertImportArray(data, key, max) {
 function validateImportData(data) {
   if (!isPlainObject(data)) throw httpError('JSON 数据结构无效')
   const limits = {
-    departments:1000, teams:1000, employees:5000, periods:1000, evaluationCodes:1000,
+    departments:1000, teams:1000, employees:5000, memberTags:1000, periods:1000, evaluationCodes:1000,
     verifyCodes:50000, tasks:200000, scores:200000, timedInvites:50000, logs:50000
   }
   for (const [key,max] of Object.entries(limits)) {
-    if (data[key] === undefined && ['timedInvites','logs'].includes(key)) data[key] = []
+    if (data[key] === undefined && ['memberTags','timedInvites','logs'].includes(key)) data[key] = []
     assertImportArray(data,key,max)
   }
   if ((data.verifyCodes || []).some((x) => x.code === '[REDACTED]' || x.codeHash === '[HASH]' || x.codeFingerprint === '[HASH]')) {
@@ -916,11 +993,15 @@ function validateImportData(data) {
   const departmentIds = new Set(data.departments.map((x) => String(x.id)))
   const teamIds = new Set(data.teams.map((x) => String(x.id)))
   const employeeIds = new Set(data.employees.map((x) => String(x.id)))
+  const memberTagIds = new Set(data.memberTags.map((x) => String(x.id)))
   const periodIds = new Set(data.periods.map((x) => String(x.id)))
   const evaluationIds = new Set(data.evaluationCodes.map((x) => String(x.id)))
   const verifyIds = new Set(data.verifyCodes.map((x) => String(x.id)))
   if (data.teams.some((x) => x.departmentId && !departmentIds.has(String(x.departmentId)))) throw httpError('团队所属部门不存在')
   if (data.employees.some((x) => !teamIds.has(String(x.teamId)) || !departmentIds.has(String(x.departmentId)))) throw httpError('成员所属部门或团队不存在')
+  if (data.memberTags.some((x) => !normalize(x.name) || normalize(x.name).length > 20)) throw httpError('成员标签名称无效')
+  if (new Set(data.memberTags.map((x) => normalize(x.name).toLocaleLowerCase('zh-CN'))).size !== data.memberTags.length) throw httpError('成员标签名称不能重复')
+  if (data.employees.some((x) => uniqueStrings(x.tagIds).some((id) => !memberTagIds.has(id)))) throw httpError('成员关联的标签不存在')
   if (data.evaluationCodes.some((x) => !teamIds.has(String(x.teamId)) || !departmentIds.has(String(x.departmentId)) || !periodIds.has(String(x.periodId)))) throw httpError('评价活动关联的部门、团队或周期不存在')
   if (data.verifyCodes.some((x) => !evaluationIds.has(String(x.evaluationCodeId)))) throw httpError('邀请码关联的评价活动不存在')
   const validTarget = (item) => {
@@ -1126,7 +1207,7 @@ async function publicRoutes(context,path,method,db) {
     }
     if (!invite.firstOpenedAt) {
       invite.firstOpenedAt = nowText()
-      invite.expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+      invite.expiresAt = new Date(Date.now() + timedInviteLifetimeSeconds(context) * 1000).toISOString()
       invite.status = 'active'
     }
     if (parseTime(invite.expiresAt) <= Date.now()) {
@@ -1393,7 +1474,62 @@ async function adminRoutes(context,path,method,db) {
   if (path === '/admin/evaluation-options' && method === 'GET') {
     const teams = db.teams.filter((x) => visibleTeamIds(db,session).has(x.id) && x.status !== 'inactive')
     const employees = scopeEmployees(db,session).filter((x) => x.status === 'active')
-    return ok({periods:db.periods,teams,employees,defaultRules:copyJson(DEFAULT_RULES)})
+    const departmentIds = new Set(teams.map((team) => team.departmentId))
+    const departments = db.departments.filter((department) => departmentIds.has(department.id) && department.status !== 'inactive')
+    return ok({periods:db.periods,departments,teams,employees,defaultRules:copyJson(DEFAULT_RULES)})
+  }
+
+  if (path === '/admin/member-tags' && method === 'GET') {
+    const denied = requirePermission(session,'employees:view'); if (denied) return denied
+    const scopedEmployees = scopeEmployees(db,session)
+    return ok({
+      items:(db.memberTags || []).map((tag) => ({
+        ...tag,memberCount:scopedEmployees.filter((employee) => (employee.tagIds || []).includes(tag.id)).length
+      })),
+      canCreate:hasPermission(session,'employees:write'),
+      canManage:session.role === 'admin'
+    })
+  }
+  if (path === '/admin/member-tags' && method === 'POST') {
+    const denied = requirePermission(session,'employees:write'); if (denied) return denied
+    const input = await bodyJson(context.request)
+    let name
+    try { name = normalizeMemberTagName(input.name) } catch (error) { return fail(String(error.message || error)) }
+    if ((db.memberTags || []).some((tag) => tag.name.toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))) return fail('标签名称已存在',409)
+    const tag = {id:randomId('tag'),name,createdAt:nowText(),updatedAt:nowText()}
+    db.memberTags.push(tag)
+    appendLog(db,session,'member_tag.create',{tagId:tag.id,name:tag.name})
+    await saveDatabase(context,db)
+    return ok({...tag,memberCount:0})
+  }
+  match = path.match(/^\/admin\/member-tags\/([^/]+)$/)
+  if (match && method === 'PUT') {
+    if (session.role !== 'admin') return fail('只有管理员可以重命名成员标签',403)
+    const tag = db.memberTags.find((item) => item.id === match[1])
+    if (!tag) return fail('成员标签不存在',404)
+    const input = await bodyJson(context.request)
+    let name
+    try { name = normalizeMemberTagName(input.name) } catch (error) { return fail(String(error.message || error)) }
+    if (db.memberTags.some((item) => item.id !== tag.id && item.name.toLocaleLowerCase('zh-CN') === name.toLocaleLowerCase('zh-CN'))) return fail('标签名称已存在',409)
+    const previousName = tag.name
+    Object.assign(tag,{name,updatedAt:nowText()})
+    appendLog(db,session,'member_tag.rename',{tagId:tag.id,previousName,name})
+    await saveDatabase(context,db)
+    return ok(tag)
+  }
+  if (match && method === 'DELETE') {
+    if (session.role !== 'admin') return fail('只有管理员可以删除成员标签',403)
+    const tag = db.memberTags.find((item) => item.id === match[1])
+    if (!tag) return fail('成员标签不存在',404)
+    let detachedCount = 0
+    db.employees.forEach((employee) => {
+      if ((employee.tagIds || []).includes(tag.id)) detachedCount++
+      employee.tagIds = (employee.tagIds || []).filter((id) => id !== tag.id)
+    })
+    db.memberTags = db.memberTags.filter((item) => item.id !== tag.id)
+    appendLog(db,session,'member_tag.delete',{tagId:tag.id,name:tag.name,detachedCount})
+    await saveDatabase(context,db)
+    return ok({deleted:true,detachedCount})
   }
 
   if (path === '/admin/employees' && method === 'GET') {
@@ -1409,7 +1545,11 @@ async function adminRoutes(context,path,method,db) {
     if (status) items = items.filter((x) => x.status === status)
     const allowedTeams = db.teams.filter((x) => visibleTeamIds(db,session).has(x.id))
     const allowedDepartmentIds = new Set(allowedTeams.map((x) => x.departmentId))
-    return ok({items,options:{departments:db.departments.filter((x) => allowedDepartmentIds.has(x.id)),teams:allowedTeams},canWrite:hasPermission(session,'employees:write')})
+    return ok({
+      items,
+      options:{departments:db.departments.filter((x) => allowedDepartmentIds.has(x.id)),teams:allowedTeams,tags:db.memberTags || []},
+      canWrite:hasPermission(session,'employees:write'),canManageTags:session.role === 'admin'
+    })
   }
   match = path.match(/^\/admin\/employees\/([^/]+)$/)
   if (match && method === 'PUT') {
@@ -1424,8 +1564,10 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    delete input.tags
     input.gender = ['male','female','unknown'].includes(input.gender) ? input.gender : current.gender
     input.avatar = normalizeEmployeeAvatar(input.avatar,input.gender)
+    input.tagIds = resolveMemberTagIds(db,input.tagIds)
     db.employees[index] = {...current,...input,id:current.id,updatedAt:nowText()}
     delete db.employees[index].employeeNo
     delete db.employees[index].phone
@@ -1447,9 +1589,11 @@ async function adminRoutes(context,path,method,db) {
     if (team.departmentId !== input.departmentId) return fail('所属部门与团队不一致')
     delete input.employeeNo
     delete input.phone
+    delete input.tags
     const gender = ['male','female','unknown'].includes(input.gender) ? input.gender : 'unknown'
     const employee = {
       ...input,id:randomId('emp'),gender,avatar:normalizeEmployeeAvatar(input.avatar,gender),
+      tagIds:resolveMemberTagIds(db,input.tagIds),
       status:input.status === 'inactive' ? 'inactive' : 'active',createdAt:nowText(),updatedAt:nowText()
     }
     db.employees.push(employee)
@@ -1555,9 +1699,25 @@ async function adminRoutes(context,path,method,db) {
     const targetMode = input.targetMode === 'selected' ? 'selected' : 'all'
     const availableTargetTeams = db.teams.filter((item) => visibleTeamIds(db,session).has(item.id) && item.status === 'active')
     const availableTargetTeamIds = new Set(availableTargetTeams.map((item) => item.id))
-    const targetEmployeeIds = targetType === 'employee'
-      ? (targetMode === 'selected' ? uniqueStrings(input.targetEmployeeIds).filter((id) => teamEmployeeIdSet.has(id)) : teamEmployees.map((x) => x.id))
-      : []
+    const availableTargetEmployees = scopeEmployees(db,session).filter((employee) => employee.status === 'active' && availableTargetTeamIds.has(employee.teamId))
+    const availableTargetEmployeeIds = new Set(availableTargetEmployees.map((employee) => employee.id))
+    const requestedEmployeeScope = ['team','department','custom'].includes(input.employeeTargetScope) ? input.employeeTargetScope : null
+    const employeeTargetScope = requestedEmployeeScope || (targetMode === 'selected' ? 'custom' : 'team')
+    const targetTeamId = normalize(input.targetTeamId) || team.id
+    const targetDepartmentId = normalize(input.targetDepartmentId) || team.departmentId
+    let targetEmployeeIds = []
+    if (targetType === 'employee' && employeeTargetScope === 'team') {
+      if (!availableTargetTeamIds.has(targetTeamId)) return fail('请选择有权限访问的有效目标团队')
+      targetEmployeeIds = availableTargetEmployees.filter((employee) => employee.teamId === targetTeamId).map((employee) => employee.id)
+    } else if (targetType === 'employee' && employeeTargetScope === 'department') {
+      const departmentTeamIds = new Set(availableTargetTeams.filter((item) => item.departmentId === targetDepartmentId).map((item) => item.id))
+      if (!departmentTeamIds.size) return fail('请选择有权限访问的有效目标部门')
+      targetEmployeeIds = availableTargetEmployees.filter((employee) => departmentTeamIds.has(employee.teamId)).map((employee) => employee.id)
+    } else if (targetType === 'employee') {
+      const candidateIds = uniqueStrings(input.targetEmployeeIds)
+      targetEmployeeIds = candidateIds.filter((id) => availableTargetEmployeeIds.has(id))
+      if (!requestedEmployeeScope) targetEmployeeIds = targetEmployeeIds.filter((id) => teamEmployeeIdSet.has(id))
+    }
     const targetTeamIds = targetType === 'team'
       ? (targetMode === 'selected' ? uniqueStrings(input.targetTeamIds).filter((id) => availableTargetTeamIds.has(id)) : availableTargetTeams.map((item) => item.id))
       : []
@@ -1571,8 +1731,9 @@ async function adminRoutes(context,path,method,db) {
     if (!Number.isInteger(participantCount) || participantCount < 1 || participantCount > 200) return fail('邀请码数量必须是 1-200 的整数')
 
     const periodMode = input.periodMode === 'existing' ? 'existing' : 'new'
-    let period = periodMode === 'existing' ? db.periods.find((x) => x.id === input.periodId) : null
+    let period = periodMode === 'existing' ? db.periods.find((x) => x.id === input.periodId && x.status !== 'inactive') : null
     if (periodMode === 'existing' && !period) return fail('请选择有效的评价周期')
+    if (period && parseTime(period.endTime) < Date.now()) return fail('所选评价周期已结束，请选择其他周期')
     if (period && (parseTime(input.startTime) < parseTime(period.startTime) || parseTime(input.endTime) > parseTime(period.endTime))) return fail('评价活动时间必须处于所选周期时间范围内')
     if (!period) {
       period = {
@@ -1587,7 +1748,9 @@ async function adminRoutes(context,path,method,db) {
       linkCode:generateUniqueLinkCode(db),
       teamId:team.id,departmentId:team.departmentId,status:'active',startTime:input.startTime,endTime:input.endTime,
       rules:prepareScoreRules(Array.isArray(input.rules)&&input.rules.length?input.rules:DEFAULT_RULES),rounding:input.rounding||DEFAULT_ROUNDING,
-      participantMode,participantEmployeeIds,targetType,targetMode,targetEmployeeIds,targetTeamIds,
+      participantMode,participantEmployeeIds,targetType,
+      targetMode:targetType === 'team' ? targetMode : employeeTargetScope === 'custom' ? 'selected' : 'all',
+      employeeTargetScope,targetTeamId,targetDepartmentId,targetEmployeeIds,targetTeamIds,
       excludeSelf:targetType === 'employee' && input.excludeSelf !== false,
       createdAt:nowText(),updatedAt:nowText()
     }
@@ -1605,15 +1768,21 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === match[1])
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权编辑',404)
+    if (evaluation.status === 'archived' && !(input.status === 'active' && Object.keys(input).every((key) => key === 'status'))) return fail('已归档活动为只读状态，只能恢复归档',409,'EVALUATION_ARCHIVED')
+    if (input.status === 'archived' && Object.keys(input).some((key) => key !== 'status')) return fail('归档活动时不能同时修改其他字段',400)
     const updates = {}
     if (input.name !== undefined) updates.name = normalize(input.name) || evaluation.name
     if (input.status !== undefined) {
       if (!['active','disabled','archived'].includes(input.status)) return fail('活动状态无效')
-      updates.status = input.status
+      try { mutateEvaluationStatus(db,session,evaluation.id,input.status) } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     }
     if (input.startTime !== undefined) updates.startTime = input.startTime
     if (input.endTime !== undefined) updates.endTime = input.endTime
     if ((updates.startTime || updates.endTime) && parseTime(updates.startTime || evaluation.startTime) >= parseTime(updates.endTime || evaluation.endTime)) return fail('开始时间和结束时间无效')
+    if (updates.startTime || updates.endTime) {
+      const period = db.periods.find((item) => item.id === evaluation.periodId)
+      if (!period || parseTime(updates.startTime || evaluation.startTime) < parseTime(period.startTime) || parseTime(updates.endTime || evaluation.endTime) > parseTime(period.endTime)) return fail('评价活动时间必须处于所属周期时间范围内')
+    }
     Object.assign(evaluation,updates,{updatedAt:nowText()})
     await saveDatabase(context,db)
     return ok(activityView(db,evaluation))
@@ -1645,7 +1814,7 @@ async function adminRoutes(context,path,method,db) {
           firstUsedAt:v.firstUsedAt,completedAt:v.completedAt
         }
       }),
-      activities:scopeEvaluations(db,session).map((x) => ({id:x.id,name:x.name,teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name || ''})),
+      activities:scopeEvaluations(db,session).map((x) => ({id:x.id,name:x.name,status:activityStatus(x),teamId:x.teamId,teamName:db.teams.find((t) => t.id===x.teamId)?.name || ''})),
       canWrite:hasPermission(session,'verify:write')
     })
   }
@@ -1654,6 +1823,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'生成邀请码') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     const participantEmployeeIds = uniqueStrings(input.participantEmployeeIds)
     const count = participantEmployeeIds.length ? 0 : Math.min(100,Math.max(1,Number(input.count)||1))
     const generated = await addVerifyCodesAndTasks(db,evaluation,{participantEmployeeIds,count})
@@ -1665,6 +1835,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'生成时效链接') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     if (activityStatus(evaluation) !== 'active') return fail('只能为进行中的评价活动生成时效链接')
     const generated = await addVerifyCodesAndTasks(db,evaluation,{count:1})
     const verifyCodeId = generated.codes[0]?.id
@@ -1677,6 +1848,22 @@ async function adminRoutes(context,path,method,db) {
     db.timedInvites.push(invite)
     await saveDatabase(context,db)
     return ok({id:invite.id,linkCode:invite.linkCode,evaluationCodeId:evaluation.id,activityName:evaluation.name,taskCount:generated.taskCount,targetCount:generated.targetCount})
+  }
+  if (path === '/admin/timed-invites' && method === 'GET') {
+    const denied = requirePermission(session,'verify:view'); if (denied) return denied
+    expireTimedInvites(db)
+    const allowedEvaluations = scopeEvaluations(db,session)
+    const allowedIds = new Set(allowedEvaluations.map((evaluation) => evaluation.id))
+    const evaluationCodeId = normalize(url.searchParams.get('evaluationCodeId'))
+    let items = db.timedInvites.filter((invite) => allowedIds.has(invite.evaluationCodeId))
+    if (evaluationCodeId) items = items.filter((invite) => invite.evaluationCodeId === evaluationCodeId)
+    return ok({
+      items:items.map((invite) => {
+        const evaluation = db.evaluationCodes.find((item) => item.id === invite.evaluationCodeId)
+        return {...timedInviteView(db,invite),activityName:evaluation?.name || '',teamName:db.teams.find((team) => team.id === evaluation?.teamId)?.name || ''}
+      }).sort((a,b) => String(b.createdAt || '').localeCompare(String(a.createdAt || ''))),
+      activities:allowedEvaluations.map((evaluation) => ({id:evaluation.id,name:evaluation.name,status:activityStatus(evaluation),teamName:db.teams.find((team) => team.id === evaluation.teamId)?.name || ''}))
+    })
   }
   match = path.match(/^\/admin\/verify-codes\/([^/]+)$/)
   if (match && method === 'DELETE') {
@@ -1691,6 +1878,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'同步任务') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     const targets = getEvaluationTargets(db,evaluation)
     const verifies = db.verifyCodes.filter((x) => x.evaluationCodeId === evaluation.id)
     let created = 0
@@ -1781,6 +1969,48 @@ async function adminRoutes(context,path,method,db) {
     })
   }
 
+  if (path === '/admin/trends/options' && method === 'GET') {
+    const denied = requirePermission(session,'results:view'); if (denied) return denied
+    if (session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+    return ok({
+      employees:scopeEmployees(db,session).map((employee) => ({id:employee.id,name:employee.name,departmentName:employee.departmentName,teamName:employee.teamName,status:employee.status})),
+      teams:db.teams.filter((team) => visibleTeamIds(db,session).has(team.id)).map((team) => ({id:team.id,name:team.name,departmentId:team.departmentId,departmentName:db.departments.find((department) => department.id === team.departmentId)?.name || '',status:team.status}))
+    })
+  }
+  if (path === '/admin/trends' && method === 'GET') {
+    const denied = requirePermission(session,'results:view'); if (denied) return denied
+    if (session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+    const targetType = url.searchParams.get('targetType') === 'team' ? 'team' : 'employee'
+    const targetId = normalize(url.searchParams.get('targetId'))
+    if (!targetId) return ok({targetType,target:null,points:[]})
+    const target = targetType === 'team'
+      ? db.teams.find((team) => team.id === targetId && visibleTeamIds(db,session).has(team.id))
+      : scopeEmployees(db,session).find((employee) => employee.id === targetId)
+    if (!target) return fail('评价对象不存在或无权查看',403)
+    const startTime = normalize(url.searchParams.get('startTime'))
+    const endTime = normalize(url.searchParams.get('endTime'))
+    const start = startTime ? parseTime(startTime) : null
+    const end = endTime ? parseTime(endTime) : null
+    if ((startTime && !Number.isFinite(start)) || (endTime && !Number.isFinite(end)) || (start !== null && end !== null && start > end)) return fail('趋势时间范围无效')
+    const points = scopeEvaluations(db,session).filter((evaluation) => {
+      const evaluationTime = parseTime(evaluation.endTime)
+      return (start === null || evaluationTime >= start) && (end === null || evaluationTime <= end)
+    }).map((evaluation) => {
+      const scores = db.scores.filter((score) => score.evaluationCodeId === evaluation.id && itemTargetType(score,evaluation) === targetType && itemTargetId(score,evaluation) === targetId)
+      if (!scores.length) return null
+      const total = Math.round(scores.reduce((sum,score) => sum + Number(score.total),0) / scores.length * 10) / 10
+      return {
+        activityId:evaluation.id,activityName:evaluation.name,periodId:evaluation.periodId,
+        periodName:db.periods.find((period) => period.id === evaluation.periodId)?.name || '',
+        evaluationTime:evaluation.endTime,reviewCount:scores.length,total,status:activityStatus(evaluation),archived:evaluation.status === 'archived'
+      }
+    }).filter(Boolean).sort((a,b) => parseTime(a.evaluationTime) - parseTime(b.evaluationTime) || String(a.activityId).localeCompare(String(b.activityId)))
+    const targetView = targetType === 'team'
+      ? {id:target.id,name:target.name,departmentName:db.departments.find((department) => department.id === target.departmentId)?.name || '',targetType}
+      : {id:target.id,name:target.name,departmentName:target.departmentName,teamName:target.teamName,targetType}
+    return ok({targetType,target:targetView,points})
+  }
+
   if (path === '/admin/settings/score-rules' && method === 'GET') {
     if (session.role !== 'admin' && session.role !== 'team_leader') return fail('当前账号没有评分规则查看权限',403)
     const available = scopeEvaluations(db,session)
@@ -1798,6 +2028,7 @@ async function adminRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const evaluation = db.evaluationCodes.find((x) => x.id === input.evaluationCodeId)
     if (!canAccessEvaluation(db,session,evaluation) || !canWriteTeam(session,evaluation?.teamId)) return fail('评价活动不存在或无权操作',404)
+    try { ensureEvaluationMutable(evaluation,'修改评分规则') } catch (error) { return fail(String(error.message || error),Number(error.status)||400,error.code) }
     evaluation.rules = prepareScoreRules(input.rules || [])
     evaluation.rounding = input.rounding || DEFAULT_ROUNDING
     evaluation.updatedAt = nowText()
