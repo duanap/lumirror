@@ -534,7 +534,10 @@ assert.equal(expiringTimed.status,200)
 env.TIMED_INVITE_SECONDS = '1'
 const expiringEntry = await call('/public/timed-entry',{method:'POST',body:{linkCode:expiringTimed.payload.data.linkCode}})
 assert.equal(expiringEntry.status,200)
-await new Promise((resolve) => setTimeout(resolve,1100))
+const expiresAtMs = new Date(expiringEntry.payload.expiresAt).getTime()
+assert.ok(expiresAtMs > Date.now())
+assert.ok(expiresAtMs <= Date.now()+2_000)
+await new Promise((resolve) => setTimeout(resolve,Math.max(0,expiresAtMs-Date.now()+100)))
 env.TIMED_INVITE_SECONDS = '300'
 const expiredTimedRows = await call(`/admin/timed-invites?evaluationCodeId=${created.payload.data.activity.id}`,{cookie:adminCookie})
 const expiredTimedRow = expiredTimedRows.payload.data.items.find((item) => item.id === expiringTimed.payload.data.id)
