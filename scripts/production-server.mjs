@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { chmod, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import onRequest from '../edge-functions/api/[[default]].js'
+import { handleNodeDirectRoute } from '../server/node-direct-routes.mjs'
 import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 import { SqliteScoreRepository } from '../server/repositories/sqlite/score-repository.mjs'
 import { SqliteTaskRepository } from '../server/repositories/sqlite/task-repository.mjs'
@@ -178,7 +179,8 @@ async function handleRequest(req, res) {
       headers,
       body: await requestBody(req)
     })
-    const response = await onRequest({ request, params: {}, env, requestId })
+    const directResponse = await handleNodeDirectRoute({request,env,requestId})
+    const response = directResponse || await onRequest({ request, params: {}, env, requestId })
     status = response.status
     const body = await writeNodeResponse(res, response, requestId)
     errorCode = responseErrorCode(body)
