@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { pbkdf2Sync } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -46,16 +47,29 @@ const teamLeaderActor = {
   employeeId:''
 }
 
+const historicalPassword = 'historical-pbkdf2-password'
+const historicalSalt = 'historical-pbkdf2-salt'
+const historicalIterations = 120000
+const historicalPasswordHash = pbkdf2Sync(historicalPassword,historicalSalt,historicalIterations,32,'sha256').toString('hex')
+
 const initial = {
   version:4,
   createdAt:'2026-09-07T00:00:00.000Z',
   updatedAt:'2026-09-07T00:00:00.000Z',
-  users:[{
-    id:'user_admin',username:'admin',displayName:'管理员',role:'admin',status:'active',
-    departmentId:'',teamId:'',employeeId:'',permissions:[],mustChangePassword:false,
-    passwordAlgorithm:'pbkdf2-sha256',passwordIterations:210000,passwordHash:'seed',salt:'seed',
-    createdAt:'2026-09-07T00:00:00.000Z',updatedAt:'2026-09-07T00:00:00.000Z'
-  }],
+  users:[
+    {
+      id:'user_admin',username:'admin',displayName:'管理员',role:'admin',status:'active',
+      departmentId:'',teamId:'',employeeId:'',permissions:[],mustChangePassword:false,
+      passwordAlgorithm:'pbkdf2-sha256',passwordIterations:210000,passwordHash:'seed',salt:'seed',
+      createdAt:'2026-09-07T00:00:00.000Z',updatedAt:'2026-09-07T00:00:00.000Z'
+    },
+    {
+      id:'user_historical_pbkdf2',username:'historical_pbkdf2',displayName:'历史 PBKDF2 账号',role:'admin',status:'active',
+      departmentId:'',teamId:'',employeeId:'',permissions:[],mustChangePassword:false,
+      passwordAlgorithm:'pbkdf2-sha256',passwordIterations:historicalIterations,passwordHash:historicalPasswordHash,salt:historicalSalt,
+      createdAt:'2026-01-01T00:00:00.000Z',updatedAt:'2026-01-01T00:00:00.000Z'
+    }
+  ],
   departments:[{id:'dep_001',name:'研发部',status:'active',createdAt:'2026-09-07T00:00:00.000Z',updatedAt:'2026-09-07T00:00:00.000Z'}],
   teams:[{id:'team_001',departmentId:'dep_001',name:'平台组',status:'active',sort:1,createdAt:'2026-09-07T00:00:00.000Z',updatedAt:'2026-09-07T00:00:00.000Z'}],
   employees:[
@@ -115,6 +129,10 @@ function assertForbidden(operation, label) {
 }
 
 try {
+  const historicalLogin = userRepository.login('historical_pbkdf2',historicalPassword)
+  assert.equal(historicalLogin?.id,'user_historical_pbkdf2','historical PBKDF2 iterations must remain login-compatible')
+  assert.equal(historicalLogin?.passwordIterations,historicalIterations,'historical PBKDF2 iterations must not be rewritten on login')
+
   assertForbidden(() => employeeRepository.create({
     name:'越权新增',gender:'unknown',departmentId:'dep_001',teamId:'team_001',position:'测试',status:'active',avatar:'',tagIds:[]
   },leaderActor),'leader must not create employees')
@@ -224,7 +242,7 @@ try {
 
   const auditList = auditRepository.list(actor,{limit:200})
   assert.ok(auditList.items.length >= expectedActions.size)
-  console.log('R2 domain closeout gate passed: audit coverage, RBAC, score-rule scope, archived read-only contract, maintenance boundary, schema 4 and integrity checks')
+  console.log('R2 domain closeout gate passed: audit coverage, RBAC, score-rule scope, historical password compatibility, archived read-only contract, maintenance boundary, schema 4 and integrity checks')
 } finally {
   storage.close()
   await rm(dataDir,{recursive:true,force:true})
