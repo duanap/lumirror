@@ -15,7 +15,10 @@
     "test:r2:current-task": "node scripts/current-task-repository-smoke.mjs",
     "test:r2:concurrency": "node scripts/r2-concurrency.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",
-    "check:functions": "node --check \"edge-functions/api/[[default]].js\""
+    "check:functions": "node --check \"edge-functions/api/[[default]].js\"",
+    "docs:dev": "npx --yes @docmd/core@0.9.4 dev",
+    "docs:build": "npx --yes @docmd/core@0.9.4 build",
+    "docs:validate": "npx --yes @docmd/core@0.9.4 validate"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

@@ -1,0 +1,121 @@
+{
+  "title": "Lumirror / 和光镜鉴",
+  "url": "https://docs.lumirror.duanap.cn",
+  "src": "docs-center",
+  "out": "docs-dist",
+  "engine": "js",
+  "layout": {
+    "spa": true,
+    "header": {
+      "enabled": true
+    },
+    "sidebar": {
+      "collapsible": true,
+      "defaultCollapsed": false
+    },
+    "optionsMenu": {
+      "position": "sidebar-top",
+      "components": {
+        "search": true,
+        "themeSwitch": true
+      }
+    },
+    "footer": {
+      "style": "minimal",
+      "content": "Lumirror / 和光镜鉴 — 匿名反馈 · 公平成长",
+      "branding": true
+    }
+  },
+  "theme": {
+    "name": "default",
+    "appearance": "system",
+    "codeHighlight": true
+  },
+  "minify": true,
+  "autoTitleFromH1": true,
+  "copyCode": true,
+  "pageNavigation": true,
+  "navigation": [
+    { "title": "首页", "path": "/", "icon": "home" },
+    {
+      "title": "开始使用",
+      "icon": "rocket",
+      "children": [
+        { "title": "概览", "path": "/getting-started/" },
+        { "title": "核心概念", "path": "/getting-started/concepts/" }
+      ]
+    },
+    {
+      "title": "参与评价",
+      "icon": "clipboard-check",
+      "children": [
+        { "title": "参与者指南", "path": "/evaluator/" },
+        { "title": "时效链接", "path": "/evaluator/timed-link/" }
+      ]
+    },
+    {
+      "title": "后台管理",
+      "icon": "settings",
+      "children": [
+        { "title": "管理员概览", "path": "/admin/" },
+        { "title": "评价活动", "path": "/admin/evaluations/" },
+        { "title": "组织与成员", "path": "/admin/organization/" },
+        { "title": "结果与趋势", "path": "/admin/results-trends/" }
+      ]
+    },
+    {
+      "title": "业务语义",
+      "icon": "book-open",
+      "children": [
+        { "title": "概览", "path": "/concepts/" },
+        { "title": "匿名边界", "path": "/concepts/anonymity/" },
+        { "title": "评分语义", "path": "/concepts/scoring/" },
+        { "title": "参与者与目标", "path": "/concepts/targeting/" }
+      ]
+    },
+    {
+      "title": "部署运维",
+      "icon": "server",
+      "children": [
+        { "title": "运维概览", "path": "/operations/" },
+        { "title": "生产部署", "path": "/operations/deployment/" }
+      ]
+    },
+    {
+      "title": "开发文档",
+      "icon": "code",
+      "children": [
+        { "title": "开发概览", "path": "/development/" },
+        { "title": "系统架构", "path": "/development/architecture/" },
+        { "title": "Backend R2", "path": "/development/backend-r2/" }
+      ]
+    },
+    {
+      "title": "安全",
+      "icon": "shield",
+      "children": [
+        { "title": "安全概览", "path": "/security/" },
+        { "title": "隐私与日志", "path": "/security/privacy/" }
+      ]
+    },
+    {
+      "title": "版本",
+      "icon": "tag",
+      "children": [
+        { "title": "版本说明", "path": "/releases/" },
+        { "title": "v1.5.1", "path": "/releases/v1.5.1/" }
+      ]
+    },
+    { "title": "GitHub", "path": "https://github.com/duanap/lumirror", "icon": "github", "external": true }
+  ],
+  "plugins": {
+    "mermaid": true,
+    "git": {
+      "commitHistory": true,
+      "maxCommits": 5
+    },
+    "seo": {
+      "defaultDescription": "Lumirror / 和光镜鉴文档中心：匿名评价、后台管理、部署运维与开发架构。"
+    }
+  }
+}
