@@ -37,3 +37,9 @@ jobs:
 
       - name: Build production assets
         run: npm run build
+
+      - name: Validate documentation links
+        run: npm run docs:validate
+
+      - name: Build documentation center
+        run: npm run docs:build
