@@ -47,6 +47,8 @@ export class SqliteScoreRepository {
     const payload = parseJson(row.payload_json)
     const targetRows = this.database.prepare('SELECT target_type, target_id FROM evaluation_targets WHERE evaluation_id = ? ORDER BY list_order').all(row.id)
     const targetType = targetRows[0]?.target_type || payload.targetType || 'employee'
+    payload.rules = this.database.prepare('SELECT payload_json FROM evaluation_rules WHERE evaluation_id = ? ORDER BY list_order').all(row.id).map((rule) => parseJson(rule.payload_json))
+    payload.participantEmployeeIds = this.database.prepare('SELECT employee_id FROM evaluation_participants WHERE evaluation_id = ? ORDER BY list_order').all(row.id).map((participant) => participant.employee_id)
     payload.targetEmployeeIds = targetRows.filter((target) => target.target_type === 'employee').map((target) => target.target_id)
     payload.targetTeamIds = targetRows.filter((target) => target.target_type === 'team').map((target) => target.target_id)
     const verifyStats = this.database.prepare(`
@@ -229,6 +231,12 @@ export class SqliteScoreRepository {
             .run(invitePayload.status, invitePayload.expiresAt || null, json(invitePayload), timedInvite.id)
         }
       }
+      const auditId = `audit_score_${score.id}`
+      const auditDetail = {evaluationId,taskId,targetType:score.targetType,targetId:score.targetId}
+      const auditPayload = {id:auditId,action:'score.submit',actorId:'',actorName:'',role:'',detail:auditDetail,createdAt:updatedAt}
+      const auditOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM audit_logs').get().value)
+      this.database.prepare('INSERT INTO audit_logs (id, action, actor_id, role, created_at, detail_json, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(auditId,'score.submit',null,null,updatedAt,json(auditDetail),json(auditPayload),auditOrder)
       this.database.prepare('UPDATE app_state SET updated_at = ? WHERE singleton = 1').run(updatedAt)
       this.database.exec('COMMIT')
       return { expected, submitted, remaining }

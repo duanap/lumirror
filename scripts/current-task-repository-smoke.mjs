@@ -81,6 +81,8 @@ try {
   assert.equal(adminResponse.status,200)
   const adminResults = await adminResponse.json()
   assert.equal(adminResults.data.items[0].id,'emp_1')
+  assert.equal(adminResults.data.activity.rules[0].id,'ability')
+  assert.deepEqual(adminResults.data.activity.participantEmployeeIds,['emp_1'])
   const trendOptions = await onRequest({request:new Request('http://localhost/api/admin/trends/options',{headers:adminHeaders}),params:{},env:adminEnv})
   assert.equal(trendOptions.status,200)
   const trends = await onRequest({request:new Request('http://localhost/api/admin/trends?targetType=employee&targetId=emp_1',{headers:adminHeaders}),params:{},env:adminEnv})

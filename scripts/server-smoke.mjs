@@ -232,6 +232,8 @@ try {
 
   const results = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(results.status, 200)
+  assert.equal(results.payload.data.activity.rules.length, 3)
+  assert.deepEqual(results.payload.data.activity.participantEmployeeIds, ['emp_001'])
   assert.equal(results.payload.data.items.reduce((total, item) => total + Number(item.reviewCount || 0), 0), 2)
   const endedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
     method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}
@@ -291,6 +293,7 @@ try {
   assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 4)
   assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'score.submit'").get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_targets WHERE target_type = 'team'").get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_tasks WHERE target_type = 'team'").get().count, 2)
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM member_tags').get().count, 1)
