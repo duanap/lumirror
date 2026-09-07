@@ -2242,6 +2242,36 @@ async function directAdminTrends(context) {
   })
 }
 
+async function directAdminTasks(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.listAdminTasks !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  const url = new URL(context.request.url)
+  return ok(repository.listAdminTasks(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
+async function directAdminVerifyCodes(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.listVerifyCodes !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  const url = new URL(context.request.url)
+  return ok(repository.listVerifyCodes(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
+async function directAdminTimedInvites(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.listTimedInvites !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  const url = new URL(context.request.url)
+  return ok(repository.listTimedInvites(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
 export default async function onRequest(context) {
   if (context.request.method === 'OPTIONS') return withCors(new Response(null,{status:204,headers:JSON_HEADERS}), context)
   const url = new URL(context.request.url)
@@ -2301,6 +2331,15 @@ export default async function onRequest(context) {
     }
     if (path === '/admin/trends' && method === 'GET' && getScoreRepository(context)?.listTrends) {
       return withCors(await directAdminTrends(context), context)
+    }
+    if (path === '/admin/tasks' && method === 'GET' && getTaskRepository(context)?.listAdminTasks) {
+      return withCors(await directAdminTasks(context), context)
+    }
+    if (path === '/admin/verify-codes' && method === 'GET' && getTaskRepository(context)?.listVerifyCodes) {
+      return withCors(await directAdminVerifyCodes(context), context)
+    }
+    if (path === '/admin/timed-invites' && method === 'GET' && getTaskRepository(context)?.listTimedInvites) {
+      return withCors(await directAdminTimedInvites(context), context)
     }
     const db = await loadDatabase(context)
     expireTimedInvites(db)
