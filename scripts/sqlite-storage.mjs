@@ -57,7 +57,7 @@ function rowsByParent(rows, parentKey, valueKey = null) {
 export class RelationalSqliteStorage {
   constructor(databaseFile) {
     this.database = new DatabaseSync(databaseFile)
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;')
+    this.database.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
     const legacyKv = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kv_store'").get()
     const relationalState = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_state'").get()
     if (legacyKv && !relationalState) {

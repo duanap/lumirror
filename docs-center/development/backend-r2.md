@@ -63,3 +63,6 @@ busy handling PASS
 ```
 
 requestQueue 移除必须是独立 PR，不能和 Domain CRUD 混在一起。
+
+当前 Request Queue Removal 阶段使用独立分支和真实 HTTP/SQLite 并发 Gate；
+移除后仍保持 Schema 4、EdgeOne compatibility 和 PM2 单 fork 实例。

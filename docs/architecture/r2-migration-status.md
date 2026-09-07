@@ -2,8 +2,8 @@
 
 This checklist records the Direct SQLite migration on `codex/backend-r2-domain-crud`.
 The Node production path has completed the Domain CRUD migration, while the legacy
-EdgeOne handler remains available as a compatibility adapter. `requestQueue` is
-still intentionally kept and must only be removed in a separate, dedicated PR.
+EdgeOne handler remains available as a compatibility adapter. The separate
+Request Queue Removal stage now dispatches HTTP requests directly.
 
 ## Stage status
 
@@ -80,15 +80,17 @@ The Domain CRUD closeout Gate includes:
 - `PRAGMA journal_mode`: WAL
 - `PRAGMA synchronous`: FULL
 - `PRAGMA busy_timeout`: 5000
-- Global request queue: KEEP
+- Global request queue: REMOVED in `codex/backend-r2-request-queue-removal`
 - PM2: one fork instance
 - EdgeOne adapter: KEEP
-- Production deploy: NO
+- Production deploy: NO for this queue-removal branch
 
-## Next stage
+## Request Queue Removal Gate
 
-After this Domain CRUD PR is merged and `main` CI is green, start a separate
-`requestQueue` removal PR from the clean merged baseline. That stage must add
-stronger HTTP/SQLite concurrency stress coverage before removing serialization.
-It must not change Schema 4, remove EdgeOne, switch PM2 to cluster mode, or deploy
-production as part of the same change.
+- [x] queue-free HTTP concurrency gate
+- [x] two-connection SQLite repository concurrency gate
+- [x] queue removal contract
+- [x] Golden, Domain closeout and Snapshot usage gates
+
+The queue-removal branch keeps Schema 4, EdgeOne and one PM2 fork instance. It
+must pass the post-removal full Gate before review and merge.
