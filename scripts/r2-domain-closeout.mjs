@@ -151,6 +151,12 @@ try {
     const evaluationId = created.activity.id
     evaluationRepository.update(evaluationId,{endTime:new Date(now - 1_000).toISOString()},actor)
     evaluationRepository.update(evaluationId,{status:'archived'},actor)
+    assert.ok(created.verifyCodes[0]?.id,'closeout evaluation must include a verification code')
+    assert.throws(
+      () => taskRepository.deleteVerifyCode(created.verifyCodes[0].id,actor),
+      (error) => error?.status === 409 && error?.code === 'EVALUATION_ARCHIVED',
+      'archived evaluation verify deletion must preserve read-only contract'
+    )
     evaluationRepository.update(evaluationId,{status:'active'},actor)
 
     const batch = batchRepository.run(actor,{resource:'employees',action:'status',status:'inactive',ids:['emp_002']})
@@ -185,7 +191,7 @@ try {
 
   const auditList = auditRepository.list(actor,{limit:200})
   assert.ok(auditList.items.length >= expectedActions.size)
-  console.log('R2 domain closeout gate passed: audit coverage, RBAC, maintenance boundary, schema 4 and integrity checks')
+  console.log('R2 domain closeout gate passed: audit coverage, RBAC, archived read-only contract, maintenance boundary, schema 4 and integrity checks')
 } finally {
   storage.close()
   await rm(dataDir,{recursive:true,force:true})
