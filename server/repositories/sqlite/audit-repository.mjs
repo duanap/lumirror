@@ -2,11 +2,9 @@ import { randomBytes } from 'node:crypto'
 
 const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
 
-export function appendAuditRecord(database, action, detail = {}, actor = {}, createdAt = new Date().toISOString()) {
-  if (!database) throw new Error('appendAuditRecord requires database')
-  const id = `audit_${randomBytes(12).toString('hex')}`
-  const payload = {
-    id,
+export function createAuditRecord(action, detail = {}, actor = {}, createdAt = new Date().toISOString()) {
+  return {
+    id:`audit_${randomBytes(12).toString('hex')}`,
     action:String(action || ''),
     actorId:actor.userId || actor.id || '',
     actorName:actor.username || actor.displayName || '',
@@ -14,9 +12,14 @@ export function appendAuditRecord(database, action, detail = {}, actor = {}, cre
     detail:detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {},
     createdAt
   }
+}
+
+export function appendAuditRecord(database, action, detail = {}, actor = {}, createdAt = new Date().toISOString()) {
+  if (!database) throw new Error('appendAuditRecord requires database')
+  const payload = createAuditRecord(action,detail,actor,createdAt)
   const order = Number(database.prepare('SELECT COALESCE(MAX(list_order)+1,0) AS value FROM audit_logs').get().value)
   database.prepare('INSERT INTO audit_logs (id,action,actor_id,role,created_at,detail_json,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
-    .run(id,payload.action,payload.actorId || null,payload.role || null,createdAt,JSON.stringify(payload.detail),JSON.stringify(payload),order)
+    .run(payload.id,payload.action,payload.actorId || null,payload.role || null,createdAt,JSON.stringify(payload.detail),JSON.stringify(payload),order)
   return payload
 }
 
