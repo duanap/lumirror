@@ -28,7 +28,6 @@ export class SqliteTaskRepository {
   }
 
   openVerifyEntry({linkCode, verifyCode}) {
-    // The evaluation ID is part of the code hash, so resolve the activity first without exposing the code.
     const candidates = this.database.prepare(`
       SELECT e.id AS evaluation_id,e.name AS evaluation_name,e.status AS evaluation_status,e.start_time,e.end_time,t.name AS team_name,
         v.id AS verify_id,v.code_hash,v.status AS verify_status,v.payload_json AS verify_payload
@@ -84,7 +83,7 @@ export class SqliteTaskRepository {
     const targets = this.activeTargets(context)
     if (!targets.length) throw appError('评价对象不能为空')
     const employees = participantEmployeeIds.length
-      ? this.database.prepare(`SELECT id,name,team_id FROM employees WHERE id IN (${participantEmployeeIds.map(() => '?').join(',')}) AND status='active'`).all(...participantEmployeeIds)
+      ? this.database.prepare(`SELECT id,name,team_id FROM employees WHERE id IN (${participantEmployeeIds.map(() => '?').join(',')}) AND status='active' AND team_id=?`).all(...participantEmployeeIds,context.row.team_id)
       : []
     if (participantEmployeeIds.length && employees.length !== new Set(participantEmployeeIds).size) throw appError('所选成员不存在或无效')
     const participants = participantEmployeeIds.length ? employees : Array.from({length:count},() => null)
@@ -116,13 +115,19 @@ export class SqliteTaskRepository {
     try {
       const verifyOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM verification_codes').get().value)
       const taskOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM evaluation_tasks').get().value)
+      let participantOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM evaluation_participants WHERE evaluation_id=?').get(evaluationId).value)
       const verifyInsert = this.database.prepare('INSERT INTO verification_codes (id,evaluation_id,participant_employee_id,code_hash,code_fingerprint,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
       const taskInsert = this.database.prepare('INSERT INTO evaluation_tasks (id,evaluation_id,verification_code_id,target_type,target_id,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
+      const participantInsert = this.database.prepare('INSERT OR IGNORE INTO evaluation_participants (evaluation_id,employee_id,list_order) VALUES (?,?,?)')
       const inviteInsert = timed ? this.database.prepare('INSERT INTO timed_invites (id,evaluation_id,verification_code_id,link_code,status,expires_at,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)') : null
       let verifyIndex = 0
       let taskIndex = 0
       for (const item of created) {
         verifyInsert.run(item.verify.id,evaluationId,item.verify.participantEmployeeId || null,item.verify.codeHash,item.verify.codeFingerprint,item.verify.status,json(item.verify),verifyOrder + verifyIndex++)
+        if (item.employeeId) {
+          const inserted = participantInsert.run(evaluationId,item.employeeId,participantOrder)
+          if (Number(inserted.changes || 0) > 0) participantOrder++
+        }
         for (const task of item.tasks) taskInsert.run(task.id,evaluationId,item.verify.id,task.targetType,task.targetId,task.status,json(task),taskOrder + taskIndex++)
         if (timed) {
           const linkCode = this.uniqueLinkCode()
@@ -157,7 +162,6 @@ export class SqliteTaskRepository {
     const context = this.evaluationContext(evaluationId,session)
     if (context.row.status === 'archived') throw appError('已归档活动为只读状态，不能同步任务',409,'EVALUATION_ARCHIVED')
     const targets = this.activeTargets(context)
-    const targetKeys = new Set(targets.map((target) => `${context.targetType}:${target.id}`))
     const verifies = this.database.prepare('SELECT id,participant_employee_id,payload_json FROM verification_codes WHERE evaluation_id = ? ORDER BY list_order').all(evaluationId)
     let created = 0
     let removed = 0
