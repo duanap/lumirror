@@ -54,17 +54,20 @@ export class SqliteUserRepository {
     throw appError('角色无效')
   }
 
-  hashPassword(password, salt) { return pbkdf2Sync(String(password),String(salt),PASSWORD_ITERATIONS,32,'sha256').toString('hex') }
+  hashPassword(password, salt, iterations = PASSWORD_ITERATIONS) {
+    const rounds = Number(iterations || PASSWORD_ITERATIONS)
+    return pbkdf2Sync(String(password),String(salt),rounds,32,'sha256').toString('hex')
+  }
   legacyHash(password, salt) { return createHash('sha256').update(`${salt}:${password}:employee-review`).digest('hex') }
   verifyPassword(password, user) {
     if (!user?.passwordHash || !user?.salt) return false
     return user.passwordAlgorithm === PASSWORD_ALGORITHM
-      ? this.hashPassword(password,user.salt) === user.passwordHash
+      ? this.hashPassword(password,user.salt,Number(user.passwordIterations || PASSWORD_ITERATIONS)) === user.passwordHash
       : this.legacyHash(password,user.salt) === user.passwordHash
   }
   passwordFields(password, forceChange) {
     const salt = randomBytes(12).toString('hex')
-    return {salt,passwordHash:this.hashPassword(password,salt),passwordAlgorithm:PASSWORD_ALGORITHM,passwordIterations:PASSWORD_ITERATIONS,mustChangePassword:Boolean(forceChange)}
+    return {salt,passwordHash:this.hashPassword(password,salt,PASSWORD_ITERATIONS),passwordAlgorithm:PASSWORD_ALGORITHM,passwordIterations:PASSWORD_ITERATIONS,mustChangePassword:Boolean(forceChange)}
   }
 
   login(username, password) {
