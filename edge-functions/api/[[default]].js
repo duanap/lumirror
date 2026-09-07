@@ -204,6 +204,10 @@ function getPeriodRepository(context) {
   const repository = context?.env?.PERIOD_REPOSITORY
   return repository && typeof repository.list === 'function' ? repository : null
 }
+function getEvaluationRepository(context) {
+  const repository = context?.env?.EVALUATION_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2274,6 +2278,23 @@ async function directAdminPeriods(context, path, method) {
   return null
 }
 
+async function directAdminEvaluations(context, path, method) {
+  const repository = getEvaluationRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (path === '/admin/evaluation-codes' && method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok(repository.list(access.session))
+  }
+  const match = path.match(/^\/admin\/evaluation-codes\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request),access.session))
+  if (method === 'DELETE') return ok(repository.delete(match[1],access.session))
+  return null
+}
+
+
 async function directAdminVerifyCodes(context) {
   const repository = getTaskRepository(context)
   if (!repository || typeof repository.listVerifyCodes !== 'function') return null
@@ -2336,6 +2357,9 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if ((path === '/admin/evaluation-codes' || path.startsWith('/admin/evaluation-codes/')) && getEvaluationRepository(context)) {
+      return withCors(await directAdminEvaluations(context,path,method), context)
+    }
     if ((path === '/admin/periods' || path.startsWith('/admin/periods/')) && getPeriodRepository(context)) {
       return withCors(await directAdminPeriods(context,path,method), context)
     }

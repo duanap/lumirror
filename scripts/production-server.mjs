@@ -7,6 +7,7 @@ import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 import { SqliteScoreRepository } from '../server/repositories/sqlite/score-repository.mjs'
 import { SqliteTaskRepository } from '../server/repositories/sqlite/task-repository.mjs'
 import { SqlitePeriodRepository } from '../server/repositories/sqlite/period-repository.mjs'
+import { SqliteEvaluationRepository } from '../server/repositories/sqlite/evaluation-repository.mjs'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 function requiredEnvironment(name) {
@@ -117,6 +118,7 @@ const storage = new RelationalSqliteStorage(databaseFile)
 const scoreRepository = new SqliteScoreRepository(storage)
 const taskRepository = new SqliteTaskRepository(storage)
 const periodRepository = new SqlitePeriodRepository(storage)
+const evaluationRepository = new SqliteEvaluationRepository(storage)
 await chmod(databaseFile, 0o600)
 
 const env = {
@@ -132,7 +134,8 @@ const env = {
   EVALUATION_KV: storage,
   SCORE_REPOSITORY: scoreRepository,
   TASK_REPOSITORY: taskRepository,
-  PERIOD_REPOSITORY: periodRepository
+  PERIOD_REPOSITORY: periodRepository,
+  EVALUATION_REPOSITORY: evaluationRepository
 }
 
 let requestQueue = Promise.resolve()
