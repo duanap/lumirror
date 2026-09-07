@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import onRequest from '../edge-functions/api/[[default]].js'
+import { SqliteScoreRepository } from '../server/repositories/sqlite/score-repository.mjs'
 import { SqliteTaskRepository } from '../server/repositories/sqlite/task-repository.mjs'
 import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 
@@ -27,7 +28,7 @@ async function token(payload) {
 const storage = new RelationalSqliteStorage(databaseFile)
 await storage.put('employee_review_db_v1', {
   version:4, createdAt:now.toISOString(), updatedAt:now.toISOString(),
-  users:[],
+  users:[{id:'user_admin',username:'admin',displayName:'管理员',role:'admin',status:'active',mustChangePassword:false,departmentId:'',teamId:'',employeeId:'',salt:'salt',passwordHash:'hash'}],
   departments:[{id:'dep_1',name:'研发部',status:'active',sort:1}],
   teams:[{id:'team_1',name:'研发团队',departmentId:'dep_1',status:'active',sort:1}],
   employees:[{id:'emp_1',name:'测试成员',gender:'unknown',departmentId:'dep_1',teamId:'team_1',position:'工程师',status:'active',tagIds:[]}],
@@ -44,6 +45,7 @@ await storage.put('employee_review_db_v1', {
 })
 
 const taskRepository = new SqliteTaskRepository(storage)
+const scoreRepository = new SqliteScoreRepository(storage)
 let snapshotRead = false
 storage.get = async () => {
   snapshotRead = true
@@ -67,7 +69,25 @@ try {
   assert.equal(payload.data.remaining,1)
   assert.equal(snapshotRead,false)
   assert.equal(storage.snapshotReadCount,0)
-  console.log('Current-task repository smoke passed: direct SQL query without whole snapshot read')
+  const adminEnv = {APP_ENV:'production',ADMIN_TOKEN_SECRET:secret,PUBLIC_TOKEN_SECRET:secret,EVALUATION_KV:storage,SCORE_REPOSITORY:scoreRepository,TASK_REPOSITORY:taskRepository,STORAGE_MODEL:'sqlite-relational'}
+  const adminHeaders = {authorization:`Bearer ${await token({kind:'backend',userId:'user_admin',username:'admin',role:'admin',exp:Math.floor(Date.now() / 1000) + 3600})}`}
+  const adminResponse = await onRequest({
+    request:new Request('http://localhost/api/admin/results?evaluationCodeId=eval_1', {
+      headers:adminHeaders
+    }),
+    params:{},
+    env:adminEnv
+  })
+  assert.equal(adminResponse.status,200)
+  const adminResults = await adminResponse.json()
+  assert.equal(adminResults.data.items[0].id,'emp_1')
+  const trendOptions = await onRequest({request:new Request('http://localhost/api/admin/trends/options',{headers:adminHeaders}),params:{},env:adminEnv})
+  assert.equal(trendOptions.status,200)
+  const trends = await onRequest({request:new Request('http://localhost/api/admin/trends?targetType=employee&targetId=emp_1',{headers:adminHeaders}),params:{},env:adminEnv})
+  assert.equal(trends.status,200)
+  assert.deepEqual((await trends.json()).data.points,[])
+  assert.equal(snapshotRead,false)
+  console.log('R2 SQL read smoke passed: current task, results and trends avoid whole snapshot reads')
 } finally {
   storage.close()
   await rm(dataDir,{recursive:true,force:true})

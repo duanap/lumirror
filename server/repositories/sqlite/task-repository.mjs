@@ -6,6 +6,103 @@ export class SqliteTaskRepository {
     this.database = storage.database
   }
 
+  getPublicSessionSeconds(fallbackSeconds = 7200) {
+    const row = this.database.prepare('SELECT public_session_minutes FROM settings WHERE singleton = 1').get()
+    const minutes = Number(row?.public_session_minutes)
+    if (Number.isInteger(minutes) && minutes >= 5 && minutes <= 240) return minutes * 60
+    return Number.isFinite(Number(fallbackSeconds)) && Number(fallbackSeconds) > 0 ? Number(fallbackSeconds) : 7200
+  }
+
+  findProgress({ evaluationId, verifyId, timedInviteId = '' }) {
+    const verifyRow = this.database.prepare('SELECT id, status, payload_json FROM verification_codes WHERE id = ? AND evaluation_id = ?').get(verifyId, evaluationId)
+    if (!verifyRow) return null
+    const progress = this.database.prepare(`
+      SELECT COUNT(*) AS expected,
+        SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) AS submitted
+      FROM evaluation_tasks WHERE verification_code_id = ?
+    `).get(verifyId)
+    const expected = Number(progress.expected || 0)
+    const submitted = Number(progress.submitted || 0)
+    const result = { expected, submitted, remaining:Math.max(0, expected - submitted), status:verifyRow.status, timedInvite:null }
+    if (timedInviteId) {
+      const inviteRow = this.database.prepare('SELECT id, status, expires_at, payload_json FROM timed_invites WHERE id = ? AND evaluation_id = ? AND verification_code_id = ?').get(timedInviteId, evaluationId, verifyId)
+      if (inviteRow) result.timedInvite = {
+        ...parseJson(inviteRow.payload_json), id:inviteRow.id, status:inviteRow.status, expiresAt:inviteRow.expires_at
+      }
+    }
+    return result
+  }
+
+  openTimedInvite({ linkCode, lifetimeSeconds, now = new Date() }) {
+    const nowText = now.toISOString()
+    const nowMs = now.getTime()
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const row = this.database.prepare(`
+        SELECT i.id, i.evaluation_id, i.verification_code_id, i.status AS invite_status, i.expires_at,
+          i.payload_json AS invite_payload, e.status AS evaluation_status, e.start_time, e.end_time,
+          e.team_id, e.payload_json AS evaluation_payload, v.status AS verify_status, v.payload_json AS verify_payload,
+          t.name AS team_name
+        FROM timed_invites i
+        JOIN evaluation_activities e ON e.id = i.evaluation_id
+        JOIN verification_codes v ON v.id = i.verification_code_id
+        LEFT JOIN teams t ON t.id = e.team_id
+        WHERE i.link_code = ?
+      `).get(linkCode)
+      if (!row) {
+        this.database.exec('COMMIT')
+        return { kind:'not-found' }
+      }
+      if (['completed','expired'].includes(row.invite_status)) {
+        this.database.exec('COMMIT')
+        return { kind:'not-found' }
+      }
+      const evaluation = {
+        ...parseJson(row.evaluation_payload), id:row.evaluation_id, teamId:row.team_id,
+        status:row.evaluation_status, startTime:row.start_time, endTime:row.end_time, teamName:row.team_name || ''
+      }
+      const start = new Date(String(evaluation.startTime || '')).getTime()
+      const end = new Date(String(evaluation.endTime || '')).getTime()
+      if (evaluation.status === 'disabled' || evaluation.status === 'archived' || (Number.isFinite(start) && nowMs < start) || (Number.isFinite(end) && nowMs > end)) {
+        this.database.exec('COMMIT')
+        return { kind:'ended' }
+      }
+      const progress = this.findProgress({evaluationId:row.evaluation_id,verifyId:row.verification_code_id})
+      if (!progress || progress.expected === 0 || progress.remaining === 0) {
+        const invitePayload = {...parseJson(row.invite_payload), status:'completed', completedAt:parseJson(row.invite_payload).completedAt || nowText}
+        this.database.prepare('UPDATE timed_invites SET status = ?, payload_json = ? WHERE id = ?').run('completed',json(invitePayload),row.id)
+        this.database.exec('COMMIT')
+        return { kind:'completed' }
+      }
+      const invitePayload = {...parseJson(row.invite_payload)}
+      if (!invitePayload.firstOpenedAt) {
+        invitePayload.firstOpenedAt = nowText
+        invitePayload.expiresAt = new Date(nowMs + Number(lifetimeSeconds) * 1000).toISOString()
+        invitePayload.status = 'active'
+      }
+      const expiresAt = invitePayload.expiresAt || row.expires_at
+      if (!expiresAt || new Date(expiresAt).getTime() <= nowMs) {
+        invitePayload.status = 'expired'
+        this.database.prepare('UPDATE timed_invites SET status = ?, expires_at = ?, payload_json = ? WHERE id = ?').run('expired',expiresAt || null,json(invitePayload),row.id)
+        this.database.exec('COMMIT')
+        return { kind:'expired' }
+      }
+      const verifyPayload = {...parseJson(row.verify_payload), firstUsedAt:parseJson(row.verify_payload).firstUsedAt || nowText, lastUsedAt:nowText, status:'in_progress'}
+      this.database.prepare('UPDATE verification_codes SET status = ?, payload_json = ? WHERE id = ?').run('in_progress',json(verifyPayload),row.verification_code_id)
+      this.database.prepare('UPDATE timed_invites SET status = ?, expires_at = ?, payload_json = ? WHERE id = ?').run('active',expiresAt,json({...invitePayload,expiresAt,status:'active'}),row.id)
+      this.database.prepare('UPDATE app_state SET updated_at = ? WHERE singleton = 1').run(nowText)
+      this.database.exec('COMMIT')
+      return {
+        kind:'ready', evaluation, verifyId:row.verification_code_id, evaluatorHash:parseJson(row.verify_payload).evaluatorHash,
+        inviteId:row.id, expiresAt, remaining:progress.remaining,
+        expiresIn:Math.max(1,Math.floor((new Date(expiresAt).getTime() - nowMs) / 1000))
+      }
+    } catch (error) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw error
+    }
+  }
+
   findCurrentTask({ evaluationId, verifyId, timedInviteId = '' }) {
     const evaluationRow = this.database.prepare(`
       SELECT id, team_id, status, start_time, end_time, payload_json
@@ -17,28 +114,11 @@ export class SqliteTaskRepository {
     `).get(verifyId, evaluationId)
     if (!evaluationRow || !verifyRow) return null
 
-    const progress = this.database.prepare(`
-      SELECT COUNT(*) AS expected,
-        SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) AS submitted
-      FROM evaluation_tasks WHERE verification_code_id = ?
-    `).get(verifyId)
-    const expected = Number(progress.expected || 0)
-    const submitted = Number(progress.submitted || 0)
-    const remaining = Math.max(0, expected - submitted)
+    const progress = this.findProgress({evaluationId,verifyId,timedInviteId})
+    if (!progress) return null
+    const { expected, submitted, remaining } = progress
 
-    let timedInvite = null
-    if (timedInviteId) {
-      const inviteRow = this.database.prepare(`
-        SELECT id, evaluation_id, verification_code_id, status, expires_at, payload_json
-        FROM timed_invites WHERE id = ? AND evaluation_id = ? AND verification_code_id = ?
-      `).get(timedInviteId, evaluationId, verifyId)
-      if (inviteRow) {
-        timedInvite = {
-          ...parseJson(inviteRow.payload_json), id:inviteRow.id, evaluationCodeId:inviteRow.evaluation_id,
-          verifyCodeId:inviteRow.verification_code_id, status:inviteRow.status, expiresAt:inviteRow.expires_at
-        }
-      }
-    }
+    const timedInvite = progress.timedInvite
 
     const taskRow = this.database.prepare(`
       SELECT id, evaluation_id, verification_code_id, target_type, target_id, status, payload_json

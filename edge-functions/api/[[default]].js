@@ -2145,6 +2145,103 @@ async function directCurrentTask(context) {
   })
 }
 
+async function directRemaining(context) {
+  const session = await requirePublic(context)
+  if (!session) return fail('评价会话已失效，请重新进入',401)
+  const repository = getTaskRepository(context)
+  if (!repository) return null
+  const result = repository.findProgress({
+    evaluationId:session.evaluationCodeId, verifyId:session.verifyCodeId, timedInviteId:session.timedInviteId || ''
+  })
+  if (!result) return fail('评价活动不存在',404)
+  if (result.timedInvite && ['completed','expired'].includes(result.timedInvite.status)) return fail('评价不存在或已结束',403,'EXPIRED')
+  if (result.timedInvite?.expiresAt && new Date(result.timedInvite.expiresAt).getTime() <= Date.now()) return fail('评价不存在或已结束',403,'EXPIRED')
+  return ok({remaining:result.remaining,completed:result.remaining === 0,timed:Boolean(result.timedInvite),expiresAt:result.timedInvite?.expiresAt || null})
+}
+
+async function directTimedEntry(context) {
+  const repository = getTaskRepository(context)
+  if (!repository) return null
+  const input = await bodyJson(context.request)
+  const linkCode = normalize(input.linkCode)
+  const result = repository.openTimedInvite({
+    linkCode, lifetimeSeconds:timedInviteLifetimeSeconds(context)
+  })
+  if (result.kind === 'not-found') return fail('评价不存在或已结束',404,'NOT_FOUND')
+  if (result.kind === 'ended') return fail('评价不存在或已结束',403,'ENDED')
+  if (result.kind === 'completed') return fail('评价不存在或已结束',403,'COMPLETED')
+  if (result.kind === 'expired') return fail('评价不存在或已结束',403,'EXPIRED')
+  const token = await signToken({
+    role:'evaluator', evaluationCodeId:result.evaluation.id, verifyCodeId:result.verifyId,
+    evaluatorHash:result.evaluatorHash, timedInviteId:result.inviteId
+  }, evaluatorSecret(context), result.expiresIn)
+  return json({
+    success:true, token, timed:true, expiresAt:result.expiresAt,
+    evaluation:{id:result.evaluation.id,name:result.evaluation.name,teamName:result.evaluation.teamName},
+    remaining:result.remaining
+  })
+}
+
+async function directAdminSession(context, repository) {
+  const tokenSession = await requireAdmin(context)
+  if (!tokenSession) return { response:fail('后台登录已失效',401) }
+  const user = repository.findUser(tokenSession.userId)
+  if (!user || user.status !== 'active') return { response:fail('账号已停用或不存在',401) }
+  if (user.mustChangePassword) return { response:fail('请先修改默认或初始密码',403,'PASSWORD_CHANGE_REQUIRED') }
+  return { session:{...tokenSession,role:user.role,teamId:user.teamId || '',departmentId:user.departmentId || '',employeeId:user.employeeId || ''}, user }
+}
+
+async function directAdminResults(context) {
+  const repository = getScoreRepository(context)
+  if (!repository || typeof repository.listResults !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('成员账号不能查看评分结果',403)
+  const url = new URL(context.request.url)
+  const result = repository.listResults(access.session,url.searchParams.get('evaluationCodeId') || '')
+  return ok({
+    ...result,
+    activity:result.activity ? {...result.activity,status:activityStatus(result.activity),lifecycleStatus:result.activity.status} : result.activity
+  })
+}
+
+async function directAdminTrendOptions(context) {
+  const repository = getScoreRepository(context)
+  if (!repository || typeof repository.listTrendOptions !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+  return ok(repository.listTrendOptions(access.session))
+}
+
+async function directAdminTrends(context) {
+  const repository = getScoreRepository(context)
+  if (!repository || typeof repository.listTrends !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+  const url = new URL(context.request.url)
+  const targetType = url.searchParams.get('targetType') === 'team' ? 'team' : 'employee'
+  const targetId = normalize(url.searchParams.get('targetId'))
+  if (!targetId) return ok({targetType,target:null,points:[]})
+  const startTime = normalize(url.searchParams.get('startTime'))
+  const endTime = normalize(url.searchParams.get('endTime'))
+  const start = startTime ? parseTime(startTime) : null
+  const end = endTime ? parseTime(endTime) : null
+  if ((startTime && !Number.isFinite(start)) || (endTime && !Number.isFinite(end)) || (start !== null && end !== null && start > end)) return fail('趋势时间范围无效')
+  const result = repository.listTrends(access.session,{targetType,targetId,startTime,endTime})
+  if (!result) return fail('评价对象不存在或无权查看',403)
+  return ok({
+    targetType,
+    target:{...result.target,targetType},
+    points:result.points.map((point) => ({
+      activityId:point.activityId,activityName:point.activityName,periodId:point.periodId,periodName:point.periodName,
+      evaluationTime:point.evaluationTime,reviewCount:point.reviewCount,total:point.total,
+      status:activityStatus({status:point.status,startTime:point.startTime,endTime:point.endTime}),archived:point.archived
+    }))
+  })
+}
+
 export default async function onRequest(context) {
   if (context.request.method === 'OPTIONS') return withCors(new Response(null,{status:204,headers:JSON_HEADERS}), context)
   const url = new URL(context.request.url)
@@ -2187,8 +2284,23 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if (path === '/public/timed-entry' && method === 'POST' && getTaskRepository(context)) {
+      return withCors(await directTimedEntry(context), context)
+    }
     if (path === '/public/current-task' && method === 'GET' && getTaskRepository(context)) {
       return withCors(await directCurrentTask(context), context)
+    }
+    if (path === '/public/remaining' && method === 'GET' && getTaskRepository(context)) {
+      return withCors(await directRemaining(context), context)
+    }
+    if (path === '/admin/results' && method === 'GET' && getScoreRepository(context)?.listResults) {
+      return withCors(await directAdminResults(context), context)
+    }
+    if (path === '/admin/trends/options' && method === 'GET' && getScoreRepository(context)?.listTrendOptions) {
+      return withCors(await directAdminTrendOptions(context), context)
+    }
+    if (path === '/admin/trends' && method === 'GET' && getScoreRepository(context)?.listTrends) {
+      return withCors(await directAdminTrends(context), context)
     }
     const db = await loadDatabase(context)
     expireTimedInvites(db)
