@@ -2294,6 +2294,14 @@ async function directAdminEvaluations(context, path, method) {
   return null
 }
 
+async function directAdminCreateActivity(context) {
+  const repository = getEvaluationRepository(context)
+  if (!repository || typeof repository.createActivity !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  return ok(repository.createActivity(await bodyJson(context.request),access.session))
+}
+
 
 async function directAdminVerifyCodes(context) {
   const repository = getTaskRepository(context)
@@ -2359,6 +2367,9 @@ export default async function onRequest(context) {
     ensureSecrets(context)
     if ((path === '/admin/evaluation-codes' || path.startsWith('/admin/evaluation-codes/')) && getEvaluationRepository(context)) {
       return withCors(await directAdminEvaluations(context,path,method), context)
+    }
+    if (path === '/admin/evaluation-activities/create-flow' && method === 'POST' && getEvaluationRepository(context)?.createActivity) {
+      return withCors(await directAdminCreateActivity(context), context)
     }
     if ((path === '/admin/periods' || path.startsWith('/admin/periods/')) && getPeriodRepository(context)) {
       return withCors(await directAdminPeriods(context,path,method), context)

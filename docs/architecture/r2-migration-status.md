@@ -22,7 +22,7 @@ Snapshot path and are listed under the later Domain CRUD migration.
 
 ## Other domains
 
-- [~] activities (list/update/archive/delete migrated; create-flow remains)
+- [x] activities
 - [x] periods
 - [ ] invites
 - [ ] tasks admin
