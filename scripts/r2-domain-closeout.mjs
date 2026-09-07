@@ -28,6 +28,15 @@ const actor = {
   employeeId:''
 }
 
+const leaderActor = {
+  userId:'user_leader',
+  username:'leader',
+  role:'leader',
+  teamId:'',
+  departmentId:'dep_001',
+  employeeId:''
+}
+
 const initial = {
   version:4,
   createdAt:'2026-09-07T00:00:00.000Z',
@@ -92,7 +101,17 @@ function assertSafeDetail(value, action, pathParts = []) {
   }
 }
 
+function assertForbidden(operation, label) {
+  assert.throws(operation,(error) => error?.status === 403 && error?.code === 'FORBIDDEN',label)
+}
+
 try {
+  assertForbidden(() => employeeRepository.create({
+    name:'越权新增',gender:'unknown',departmentId:'dep_001',teamId:'team_001',position:'测试',status:'active',avatar:'',tagIds:[]
+  },leaderActor),'leader must not create employees')
+  assertForbidden(() => employeeRepository.update('emp_002',{status:'inactive'},leaderActor),'leader must not update employees')
+  assertForbidden(() => employeeRepository.delete('emp_002',leaderActor),'leader must not delete employees')
+
   await runWithAuditActor(actor,async () => {
     const user = userRepository.create({
       username:'closeout_user',displayName:'Closeout User',password:'closeout-user-password',
@@ -155,7 +174,7 @@ try {
 
   const auditList = auditRepository.list(actor,{limit:200})
   assert.ok(auditList.items.length >= expectedActions.size)
-  console.log('R2 domain closeout gate passed: audit coverage, maintenance boundary, schema 4 and integrity checks')
+  console.log('R2 domain closeout gate passed: audit coverage, RBAC, maintenance boundary, schema 4 and integrity checks')
 } finally {
   storage.close()
   await rm(dataDir,{recursive:true,force:true})
