@@ -1,4 +1,24 @@
+import { randomBytes } from 'node:crypto'
+
 const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
+
+export function appendAuditRecord(database, action, detail = {}, actor = {}, createdAt = new Date().toISOString()) {
+  if (!database) throw new Error('appendAuditRecord requires database')
+  const id = `audit_${randomBytes(12).toString('hex')}`
+  const payload = {
+    id,
+    action:String(action || ''),
+    actorId:actor.userId || actor.id || '',
+    actorName:actor.username || actor.displayName || '',
+    role:actor.role || '',
+    detail:detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {},
+    createdAt
+  }
+  const order = Number(database.prepare('SELECT COALESCE(MAX(list_order)+1,0) AS value FROM audit_logs').get().value)
+  database.prepare('INSERT INTO audit_logs (id,action,actor_id,role,created_at,detail_json,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id,payload.action,payload.actorId || null,payload.role || null,createdAt,JSON.stringify(payload.detail),JSON.stringify(payload),order)
+  return payload
+}
 
 export class SqliteAuditRepository {
   constructor(storage) {
@@ -29,11 +49,6 @@ export class SqliteAuditRepository {
   }
 
   append(action, detail = {}, actor = {}) {
-    const createdAt = new Date().toISOString()
-    const id = `audit_${Date.now()}_${Math.random().toString(16).slice(2)}`
-    const payload = {id,action,actorId:actor.userId || '',actorName:actor.username || '',role:actor.role || '',detail,createdAt}
-    const order = Number(this.database.prepare('SELECT COALESCE(MAX(list_order)+1,0) AS value FROM audit_logs').get().value)
-    this.database.prepare('INSERT INTO audit_logs (id,action,actor_id,role,created_at,detail_json,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)').run(id,action,actor.userId || null,actor.role || null,createdAt,JSON.stringify(detail),JSON.stringify(payload),order)
-    return payload
+    return appendAuditRecord(this.database,action,detail,actor)
   }
 }
