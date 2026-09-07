@@ -220,6 +220,10 @@ function getUserRepository(context) {
   const repository = context?.env?.USER_REPOSITORY
   return repository && typeof repository.findUser === 'function' ? repository : null
 }
+function getAuditRepository(context) {
+  const repository = context?.env?.AUDIT_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2394,6 +2398,15 @@ async function directAdminChangePassword(context) {
   return ok(repository.changePassword(tokenSession.userId,input.currentPassword,input.newPassword))
 }
 
+async function directAdminLogs(context) {
+  const repository = getAuditRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const url = new URL(context.request.url)
+  return ok(repository.list(access.session,{limit:url.searchParams.get('limit'),offset:url.searchParams.get('offset'),action:url.searchParams.get('action'),actorId:url.searchParams.get('actorId'),role:url.searchParams.get('role'),startTime:url.searchParams.get('startTime'),endTime:url.searchParams.get('endTime')}))
+}
+
 async function directAdminCreateActivity(context) {
   const repository = getEvaluationRepository(context)
   if (!repository || typeof repository.createActivity !== 'function') return null
@@ -2516,6 +2529,9 @@ export default async function onRequest(context) {
     }
     if ((path === '/admin/users' || path.startsWith('/admin/users/')) && getUserRepository(context)) {
       return withCors(await directAdminUsers(context,path,method), context)
+    }
+    if (path === '/admin/logs' && method === 'GET' && getAuditRepository(context)) {
+      return withCors(await directAdminLogs(context), context)
     }
     if ((path === '/admin/employees' || path.startsWith('/admin/employees/')) && getEmployeeRepository(context)) {
       return withCors(await directAdminEmployees(context,path,method), context)

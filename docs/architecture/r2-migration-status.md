@@ -31,7 +31,7 @@ Snapshot path and are listed under the later Domain CRUD migration.
 - [x] departments
 - [x] teams
 - [x] users
-- [ ] audit
+- [~] audit (Direct SQL query and scoring/evaluation writes migrated; remaining CRUD audit coverage is being closed)
 - [ ] import/export
 
 ## Guardrails
