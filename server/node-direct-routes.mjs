@@ -36,15 +36,19 @@ function withHeaders(response, {request,env,requestId}) {
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers})
 }
 
+function bearerToken(request) {
+  return String(request.headers.get('authorization') || '').replace(/^Bearer\s+/i,'')
+}
+
 function adminToken(request) {
-  const authorization = String(request.headers.get('authorization') || '').replace(/^Bearer\s+/i,'')
+  const authorization = bearerToken(request)
   if (authorization) return authorization
   const cookie = String(request.headers.get('cookie') || '')
   const raw = cookie.split(';').map((item) => item.trim()).find((item) => item.startsWith('lumirror_admin='))
   return raw ? decodeURIComponent(raw.slice('lumirror_admin='.length)) : ''
 }
 
-function verifyAdminToken(token, secret) {
+function verifySignedToken(token, secret) {
   try {
     const [encoded,signatureText] = String(token || '').split('.')
     if (!encoded || !signatureText || !secret) return null
@@ -52,9 +56,19 @@ function verifyAdminToken(token, secret) {
     const expected = createHmac('sha256',String(secret)).update(encoded).digest()
     if (actual.length !== expected.length || !timingSafeEqual(actual,expected)) return null
     const payload = JSON.parse(Buffer.from(encoded,'base64url').toString('utf8'))
-    if (payload?.kind !== 'backend' || !payload.exp || Number(payload.exp) < Math.floor(Date.now()/1000)) return null
+    if (!payload.exp || Number(payload.exp) < Math.floor(Date.now()/1000)) return null
     return payload
   } catch { return null }
+}
+
+function verifyAdminToken(token, secret) {
+  const payload = verifySignedToken(token,secret)
+  return payload?.kind === 'backend' ? payload : null
+}
+
+function verifyPublicToken(token, secret) {
+  const payload = verifySignedToken(token,secret)
+  return payload?.role === 'evaluator' ? payload : null
 }
 
 export function resolveNodeAdminActor({request,env,userRepository}) {
@@ -74,6 +88,7 @@ async function bodyJson(request) {
 }
 
 const directRoutes = new Set([
+  'POST /public/submit-score',
   'POST /admin/batch',
   'POST /admin/maintenance/cleanup',
   'GET /admin/export/json',
@@ -89,6 +104,13 @@ export async function handleNodeDirectRoute({request,env,requestId}) {
 
   const context = {request,env,requestId}
   try {
+    if (path === '/public/submit-score') {
+      if (!env.PUBLIC_SCORE_REPOSITORY?.submit) return null
+      const session = verifyPublicToken(bearerToken(request),env.PUBLIC_TOKEN_SECRET)
+      if (!session) return withHeaders(fail('评价会话已失效，请重新进入',401),context)
+      return withHeaders(ok(env.PUBLIC_SCORE_REPOSITORY.submit(session,await bodyJson(request))),context)
+    }
+
     const repository = path === '/admin/batch' ? env.BATCH_REPOSITORY : env.MAINTENANCE_REPOSITORY
     if (!repository?.findUser) return null
     const token = verifyAdminToken(adminToken(request),env.ADMIN_TOKEN_SECRET)
