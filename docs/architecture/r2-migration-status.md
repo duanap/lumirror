@@ -24,14 +24,13 @@ Snapshot path and are listed under the later Domain CRUD migration.
 
 - [x] activities
 - [x] periods
-- [ ] invites
-- [ ] tasks admin
+- [x] invites
+- [x] tasks admin
 - [ ] employees
 - [ ] member tags
 - [ ] departments
 - [ ] teams
 - [ ] users
-- [ ] periods
 - [ ] audit
 - [ ] import/export
 

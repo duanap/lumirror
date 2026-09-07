@@ -1,4 +1,10 @@
+import { randomBytes, createHash } from 'node:crypto'
+
 const parseJson = (value, fallback = {}) => value === null || value === undefined || value === '' ? fallback : JSON.parse(value)
+const json = (value) => JSON.stringify(value ?? null)
+const hash = (value) => createHash('sha256').update(value).digest('hex')
+const randomId = (prefix) => `${prefix}_${randomBytes(8).toString('hex')}`
+const appError = (message, status = 400, code = 'BAD_REQUEST') => Object.assign(new Error(message), { status, code })
 
 export class SqliteTaskRepository {
   constructor(storage) {
@@ -20,6 +26,195 @@ export class SqliteTaskRepository {
       ...parseJson(row.payload_json), id:row.id, username:row.username, role:row.role, status:row.status,
       departmentId:row.department_id || '', teamId:row.team_id || '', employeeId:row.employee_id || ''
     }
+  }
+
+  evaluationContext(evaluationId, session) {
+    const row = this.database.prepare('SELECT id, name, status, team_id, department_id, start_time, end_time, payload_json FROM evaluation_activities WHERE id = ?').get(evaluationId)
+    if (!row || session.role === 'member' || (session.role === 'team_leader' && session.teamId !== row.team_id) || (session.role === 'leader' && session.departmentId !== row.department_id)) throw appError('评价活动不存在或无权操作',404,'NOT_FOUND')
+    if (session.role !== 'admin' && session.role !== 'team_leader') throw appError('当前账号没有此操作权限',403,'FORBIDDEN')
+    const payload = parseJson(row.payload_json)
+    const targetRows = this.database.prepare('SELECT target_type,target_id FROM evaluation_targets WHERE evaluation_id = ? ORDER BY list_order').all(evaluationId)
+    return {row,payload,targetType:targetRows[0]?.target_type || payload.targetType || 'employee',targetIds:targetRows.map((target) => target.target_id)}
+  }
+
+  activeTargets(context) {
+    return context.targetType === 'team'
+      ? this.database.prepare(`SELECT t.id,t.name FROM teams t JOIN evaluation_targets et ON et.target_id=t.id AND et.target_type='team' WHERE et.evaluation_id=? AND t.status='active' ORDER BY et.list_order`).all(context.row.id)
+      : this.database.prepare(`SELECT e.id,e.name,e.team_id FROM employees e JOIN evaluation_targets et ON et.target_id=e.id AND et.target_type='employee' WHERE et.evaluation_id=? AND e.status='active' ORDER BY et.list_order`).all(context.row.id)
+  }
+
+  createVerifyRecords(evaluationId, session, { participantEmployeeIds = [], count = 0, timed = false } = {}) {
+    const context = this.evaluationContext(evaluationId,session)
+    if (context.row.status === 'archived') throw appError('已归档活动为只读状态，不能生成邀请码',409,'EVALUATION_ARCHIVED')
+    const targets = this.activeTargets(context)
+    if (!targets.length) throw appError('评价对象不能为空')
+    const employees = participantEmployeeIds.length
+      ? this.database.prepare(`SELECT id,name,team_id FROM employees WHERE id IN (${participantEmployeeIds.map(() => '?').join(',')}) AND status='active'`).all(...participantEmployeeIds)
+      : []
+    if (participantEmployeeIds.length && employees.length !== new Set(participantEmployeeIds).size) throw appError('所选成员不存在或无效')
+    const participants = participantEmployeeIds.length ? employees : Array.from({length:count},() => null)
+    if (!participants.length) throw appError('至少需要生成 1 个邀请码')
+    const evaluation = {...context.payload,id:context.row.id,targetType:context.targetType,excludeSelf:Boolean(context.payload.excludeSelf)}
+    const existingParticipants = new Set(this.database.prepare('SELECT participant_employee_id FROM verification_codes WHERE evaluation_id = ? AND participant_employee_id IS NOT NULL').all(evaluationId).map((row) => row.participant_employee_id))
+    if (participantEmployeeIds.some((id) => existingParticipants.has(id))) throw appError('所选成员在该活动中已绑定邀请码')
+    const created = []
+    const usedFingerprints = new Set(this.database.prepare('SELECT code_fingerprint FROM verification_codes').all().map((row) => row.code_fingerprint))
+    for (const participant of participants) {
+      const taskTargets = targets.filter((target) => !(evaluation.targetType === 'employee' && evaluation.excludeSelf && participant?.id && target.id === participant.id))
+      if (participant && !taskTargets.length) throw appError(`${participant.name}没有可评价对象，请调整评价范围或关闭“排除自评”`)
+      let code
+      let fingerprint
+      do {
+        code = String(Math.floor(randomBytes(4).readUInt32BE(0) / 0x100000000 * 1000000)).padStart(6,'0')
+        fingerprint = hash(`employee-review:verify:${code}`)
+      } while (usedFingerprints.has(fingerprint))
+      usedFingerprints.add(fingerprint)
+      const codeHash = hash(`${evaluationId}:${code}`)
+      const evaluatorHash = hash(`evaluator:${codeHash}`)
+      const verifyId = randomId('verify')
+      const createdAt = new Date().toISOString()
+      const verify = {id:verifyId,evaluationCodeId:evaluationId,codeHash,codeFingerprint:fingerprint,codeMask:`****${code.slice(-2)}`,suffix:code.slice(-2),evaluatorHash,participantEmployeeId:participant?.id || '',expected:taskTargets.length,submitted:0,remaining:taskTargets.length,status:'unused',firstUsedAt:null,lastUsedAt:null,completedAt:null,createdAt}
+      const tasks = taskTargets.map((target) => ({id:randomId('task'),evaluationCodeId:evaluationId,verifyCodeId:verifyId,evaluatorHash,...(evaluation.targetType === 'team' ? {targetType:'team',targetId:target.id,targetTeamId:target.id} : {targetType:'employee',targetId:target.id,targetEmployeeId:target.id}),status:'pending',submittedAt:null}))
+      created.push({verify,tasks,code,employeeId:participant?.id || '',employeeName:participant?.name || ''})
+    }
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const verifyOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM verification_codes').get().value)
+      const taskOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM evaluation_tasks').get().value)
+      const verifyInsert = this.database.prepare('INSERT INTO verification_codes (id,evaluation_id,participant_employee_id,code_hash,code_fingerprint,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
+      const taskInsert = this.database.prepare('INSERT INTO evaluation_tasks (id,evaluation_id,verification_code_id,target_type,target_id,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
+      const inviteInsert = timed ? this.database.prepare('INSERT INTO timed_invites (id,evaluation_id,verification_code_id,link_code,status,expires_at,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)') : null
+      let verifyIndex = 0
+      let taskIndex = 0
+      for (const item of created) {
+        verifyInsert.run(item.verify.id,evaluationId,item.verify.participantEmployeeId || null,item.verify.codeHash,item.verify.codeFingerprint,item.verify.status,json(item.verify),verifyOrder + verifyIndex++)
+        for (const task of item.tasks) taskInsert.run(task.id,evaluationId,item.verify.id,task.targetType,task.targetId,task.status,json(task),taskOrder + taskIndex++)
+        if (timed) {
+          const linkCode = this.uniqueLinkCode()
+          const invite = {id:randomId('timed'),linkCode,evaluationCodeId:evaluationId,verifyCodeId:item.verify.id,status:'unused',createdAt:new Date().toISOString(),firstOpenedAt:null,expiresAt:null,completedAt:null}
+          inviteInsert.run(invite.id,evaluationId,item.verify.id,linkCode,'unused',null,json(invite),verifyIndex - 1)
+          item.invite = invite
+        }
+      }
+      this.database.prepare('UPDATE app_state SET updated_at = ? WHERE singleton = 1').run(new Date().toISOString())
+      this.database.exec('COMMIT')
+    } catch (cause) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw cause
+    }
+    return {created,targets:targets.length}
+  }
+
+  generateVerifyCodes(evaluationId, session, input) {
+    const participantEmployeeIds = Array.isArray(input.participantEmployeeIds) ? [...new Set(input.participantEmployeeIds.map(String).filter(Boolean))] : []
+    const count = participantEmployeeIds.length ? 0 : Math.min(100,Math.max(1,Number(input.count) || 1))
+    const generated = this.createVerifyRecords(evaluationId,session,{participantEmployeeIds,count})
+    return {codes:generated.created.map((item) => ({id:item.verify.id,code:item.code,employeeId:item.employeeId,employeeName:item.employeeName})),taskCount:generated.created.reduce((sum,item) => sum + item.tasks.length,0),targetCount:generated.targets}
+  }
+
+  generateTimedInvite(evaluationId, session) {
+    const generated = this.createVerifyRecords(evaluationId,session,{count:1,timed:true})
+    const item = generated.created[0]
+    return {id:item.invite.id,linkCode:item.invite.linkCode,evaluationCodeId:evaluationId,activityName:this.database.prepare('SELECT name FROM evaluation_activities WHERE id=?').get(evaluationId).name,taskCount:item.tasks.length,targetCount:generated.targets}
+  }
+
+  generateTasks(evaluationId, session) {
+    const context = this.evaluationContext(evaluationId,session)
+    if (context.row.status === 'archived') throw appError('已归档活动为只读状态，不能同步任务',409,'EVALUATION_ARCHIVED')
+    const targets = this.activeTargets(context)
+    const targetKeys = new Set(targets.map((target) => `${context.targetType}:${target.id}`))
+    const verifies = this.database.prepare('SELECT id,participant_employee_id,payload_json FROM verification_codes WHERE evaluation_id = ? ORDER BY list_order').all(evaluationId)
+    let created = 0
+    let removed = 0
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      let nextOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM evaluation_tasks').get().value)
+      for (const verify of verifies) {
+        const verifyPayload = parseJson(verify.payload_json)
+        const desired = targets.filter((target) => !(context.targetType === 'employee' && context.payload.excludeSelf && verify.participant_employee_id && target.id === verify.participant_employee_id))
+        const existing = this.database.prepare('SELECT id,target_type,target_id,status FROM evaluation_tasks WHERE verification_code_id = ?').all(verify.id)
+        const desiredKeys = new Set(desired.map((target) => `${context.targetType}:${target.id}`))
+        for (const task of existing) {
+          if (!desiredKeys.has(`${task.target_type}:${task.target_id}`) && task.status !== 'submitted') {
+            this.database.prepare('DELETE FROM evaluation_tasks WHERE id = ?').run(task.id)
+            removed++
+          }
+        }
+        const current = new Set(this.database.prepare('SELECT target_type,target_id FROM evaluation_tasks WHERE verification_code_id = ?').all(verify.id).map((task) => `${task.target_type}:${task.target_id}`))
+        const insert = this.database.prepare('INSERT INTO evaluation_tasks (id,evaluation_id,verification_code_id,target_type,target_id,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
+        for (const target of desired) {
+          const key = `${context.targetType}:${target.id}`
+          if (current.has(key)) continue
+          const task = {id:randomId('task'),evaluationCodeId:evaluationId,verifyCodeId:verify.id,evaluatorHash:verifyPayload.evaluatorHash,...(context.targetType === 'team' ? {targetType:'team',targetId:target.id,targetTeamId:target.id} : {targetType:'employee',targetId:target.id,targetEmployeeId:target.id}),status:'pending',submittedAt:null}
+          insert.run(task.id,evaluationId,verify.id,task.targetType,task.targetId,'pending',json(task),nextOrder++)
+          created++
+        }
+        const progress = this.database.prepare("SELECT COUNT(*) AS expected,SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) AS submitted FROM evaluation_tasks WHERE verification_code_id=?").get(verify.id)
+        const expected = Number(progress.expected || 0)
+        const submitted = Number(progress.submitted || 0)
+        const nextVerify = {...verifyPayload,expected,submitted,remaining:Math.max(0,expected-submitted),status:expected > 0 && submitted === expected ? 'completed' : verifyPayload.firstUsedAt ? 'in_progress' : 'unused'}
+        if (nextVerify.status === 'completed') nextVerify.completedAt ||= new Date().toISOString()
+        else nextVerify.completedAt = null
+        this.database.prepare('UPDATE verification_codes SET status=?,payload_json=? WHERE id=?').run(nextVerify.status,json(nextVerify),verify.id)
+      }
+      this.database.prepare('UPDATE app_state SET updated_at = ? WHERE singleton = 1').run(new Date().toISOString())
+      this.database.exec('COMMIT')
+      return {created,removed}
+    } catch (cause) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw cause
+    }
+  }
+
+  deleteVerifyCode(verifyId, session) {
+    const row = this.database.prepare('SELECT v.id,v.evaluation_id,v.payload_json,e.status,e.team_id,e.department_id FROM verification_codes v JOIN evaluation_activities e ON e.id=v.evaluation_id WHERE v.id=?').get(verifyId)
+    if (!row) throw appError('邀请码不存在或无权删除',404,'NOT_FOUND')
+    if ((session.role !== 'admin' && !(session.role === 'team_leader' && session.teamId === row.team_id)) || row.status === 'archived') throw appError('邀请码不存在或无权删除',404,'NOT_FOUND')
+    if (row.status === 'archived') throw appError('已归档活动为只读状态',409,'EVALUATION_ARCHIVED')
+    if (this.database.prepare("SELECT 1 FROM evaluation_tasks WHERE verification_code_id=? AND status='submitted' LIMIT 1").get(verifyId)) throw appError('该邀请码已有提交记录，不能删除',409)
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.prepare('DELETE FROM verification_codes WHERE id=?').run(verifyId)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(new Date().toISOString())
+      this.database.exec('COMMIT')
+      return {deleted:true}
+    } catch (cause) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw cause
+    }
+  }
+
+  deleteTask(taskId, session) {
+    const row = this.database.prepare('SELECT t.id,t.status,t.verification_code_id,e.id AS evaluation_id,e.status AS evaluation_status,e.team_id,e.department_id FROM evaluation_tasks t JOIN evaluation_activities e ON e.id=t.evaluation_id WHERE t.id=?').get(taskId)
+    if (!row || (session.role !== 'admin' && !(session.role === 'team_leader' && session.teamId === row.team_id))) throw appError('任务不存在或无权删除',404,'NOT_FOUND')
+    if (row.evaluation_status === 'archived') throw appError('已归档活动为只读状态',409,'EVALUATION_ARCHIVED')
+    if (row.status === 'submitted' || this.database.prepare('SELECT 1 FROM scores WHERE task_id=?').get(taskId)) throw appError('已提交任务不能删除',409)
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.prepare('DELETE FROM evaluation_tasks WHERE id=?').run(taskId)
+      const verify = this.database.prepare('SELECT payload_json FROM verification_codes WHERE id=?').get(row.verification_code_id)
+      if (verify) {
+        const payload = parseJson(verify.payload_json)
+        const progress = this.database.prepare("SELECT COUNT(*) AS expected,SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) AS submitted FROM evaluation_tasks WHERE verification_code_id=?").get(row.verification_code_id)
+        const expected = Number(progress.expected || 0), submitted = Number(progress.submitted || 0)
+        payload.expected=expected;payload.submitted=submitted;payload.remaining=Math.max(0,expected-submitted)
+        this.database.prepare('UPDATE verification_codes SET status=?,payload_json=? WHERE id=?').run(expected > 0 && submitted === expected ? 'completed' : payload.firstUsedAt ? 'in_progress' : 'unused',json(payload),row.verification_code_id)
+      }
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(new Date().toISOString())
+      this.database.exec('COMMIT')
+      return {deleted:true}
+    } catch (cause) {
+      try { this.database.exec('ROLLBACK') } catch {}
+      throw cause
+    }
+  }
+
+  uniqueLinkCode() {
+    for (let index = 0; index < 10000; index += 1) {
+      const code = String(Number(BigInt(`0x${randomBytes(6).toString('hex')}`) % 100000000n)).padStart(8,'0')
+      if (!this.database.prepare('SELECT 1 FROM evaluation_activities WHERE link_code=?').get(code) && !this.database.prepare('SELECT 1 FROM timed_invites WHERE link_code=?').get(code)) return code
+    }
+    throw appError('无法生成唯一邀请链接',500,'CODE_GENERATION_FAILED')
   }
 
   visibleEvaluations(session) {

@@ -2313,6 +2313,49 @@ async function directAdminVerifyCodes(context) {
   return ok(repository.listVerifyCodes(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
 }
 
+async function directAdminGenerateVerifyCodes(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.generateVerifyCodes !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const input = await bodyJson(context.request)
+  return ok(repository.generateVerifyCodes(input.evaluationCodeId,access.session,input))
+}
+
+async function directAdminGenerateTimedInvite(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.generateTimedInvite !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const input = await bodyJson(context.request)
+  return ok(repository.generateTimedInvite(input.evaluationCodeId,access.session))
+}
+
+async function directAdminGenerateTasks(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.generateTasks !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const input = await bodyJson(context.request)
+  return ok(repository.generateTasks(input.evaluationCodeId,access.session))
+}
+
+async function directAdminDeleteVerifyCode(context, verifyId) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.deleteVerifyCode !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  return ok(repository.deleteVerifyCode(verifyId,access.session))
+}
+
+async function directAdminDeleteTask(context, taskId) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.deleteTask !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  return ok(repository.deleteTask(taskId,access.session))
+}
+
 async function directAdminTimedInvites(context) {
   const repository = getTaskRepository(context)
   if (!repository || typeof repository.listTimedInvites !== 'function') return null
@@ -2394,6 +2437,23 @@ export default async function onRequest(context) {
     }
     if (path === '/admin/tasks' && method === 'GET' && getTaskRepository(context)?.listAdminTasks) {
       return withCors(await directAdminTasks(context), context)
+    }
+    if (path === '/admin/verify-codes/generate' && method === 'POST' && getTaskRepository(context)?.generateVerifyCodes) {
+      return withCors(await directAdminGenerateVerifyCodes(context), context)
+    }
+    if (path === '/admin/timed-invites/generate' && method === 'POST' && getTaskRepository(context)?.generateTimedInvite) {
+      return withCors(await directAdminGenerateTimedInvite(context), context)
+    }
+    if (path === '/admin/tasks/generate' && method === 'POST' && getTaskRepository(context)?.generateTasks) {
+      return withCors(await directAdminGenerateTasks(context), context)
+    }
+    const directVerifyDelete = path.match(/^\/admin\/verify-codes\/([^/]+)$/)
+    if (directVerifyDelete && method === 'DELETE' && getTaskRepository(context)?.deleteVerifyCode) {
+      return withCors(await directAdminDeleteVerifyCode(context,directVerifyDelete[1]), context)
+    }
+    const directTaskDelete = path.match(/^\/admin\/tasks\/([^/]+)$/)
+    if (directTaskDelete && method === 'DELETE' && getTaskRepository(context)?.deleteTask) {
+      return withCors(await directAdminDeleteTask(context,directTaskDelete[1]), context)
     }
     if (path === '/admin/verify-codes' && method === 'GET' && getTaskRepository(context)?.listVerifyCodes) {
       return withCors(await directAdminVerifyCodes(context), context)
