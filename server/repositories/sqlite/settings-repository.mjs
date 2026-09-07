@@ -1,3 +1,6 @@
+import { appendAuditRecord } from './audit-repository.mjs'
+import { currentAuditActor } from '../../request-context.mjs'
+
 const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
 const appError = (message, status = 400, code = 'BAD_REQUEST') => Object.assign(new Error(message), { status, code })
 
@@ -24,8 +27,16 @@ export class SqliteSettingsRepository {
     if (input.systemName !== undefined) { next.systemName = String(input.systemName || '').trim(); if (!next.systemName || next.systemName.length > 40) throw appError('系统名称需为 1-40 个字符') }
     if (input.publicSessionMinutes !== undefined) { next.publicSessionMinutes = Number(input.publicSessionMinutes); if (!Number.isInteger(next.publicSessionMinutes) || next.publicSessionMinutes < 5 || next.publicSessionMinutes > 240) throw appError('普通评价会话时长需为 5-240 分钟') }
     if (input.logRetentionDays !== undefined) { next.logRetentionDays = Number(input.logRetentionDays); if (!Number.isInteger(next.logRetentionDays) || next.logRetentionDays < 7 || next.logRetentionDays > 3650) throw appError('日志保留天数需为 7-3650 天') }
+    const changedKeys = Object.keys(input || {}).filter((key) => ['systemName','publicSessionMinutes','logRetentionDays'].includes(key))
+    const updatedAt = new Date().toISOString()
     this.database.exec('BEGIN IMMEDIATE')
-    try { this.database.prepare('UPDATE settings SET system_name=?,public_session_minutes=?,log_retention_days=? WHERE singleton=1').run(next.systemName,next.publicSessionMinutes,next.logRetentionDays); this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(new Date().toISOString()); this.database.exec('COMMIT'); return next }
+    try {
+      this.database.prepare('UPDATE settings SET system_name=?,public_session_minutes=?,log_retention_days=? WHERE singleton=1').run(next.systemName,next.publicSessionMinutes,next.logRetentionDays)
+      appendAuditRecord(this.database,'settings.update',{keys:changedKeys},currentAuditActor(),updatedAt)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(updatedAt)
+      this.database.exec('COMMIT')
+      return next
+    }
     catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
   }
 
