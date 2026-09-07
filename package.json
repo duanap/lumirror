@@ -14,6 +14,7 @@
     "test:golden": "node scripts/r2-golden.mjs",
     "test:r2:current-task": "node scripts/current-task-repository-smoke.mjs",
     "test:r2:concurrency": "node scripts/r2-concurrency.mjs",
+    "check:snapshot-usage": "node scripts/snapshot-usage-gate.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",
     "check:functions": "node --check \"edge-functions/api/[[default]].js\""
   },

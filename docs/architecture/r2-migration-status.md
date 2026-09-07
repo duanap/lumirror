@@ -32,7 +32,12 @@ Snapshot path and are listed under the later Domain CRUD migration.
 - [x] teams
 - [x] users
 - [~] audit (Direct SQL query and scoring/evaluation writes migrated; remaining CRUD audit coverage is being closed)
-- [ ] import/export
+- [~] import/export (maintenance Snapshot path retained; usage gate added)
+
+Snapshot usage: `npm run check:snapshot-usage` currently reports normal
+Snapshot mutation candidates. `--expect-clean` must remain failing until all
+normal CRUD mutation paths are migrated; maintenance import/export Snapshot
+compatibility is allowed.
 
 ## Guardrails
 

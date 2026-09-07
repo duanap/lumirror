@@ -342,6 +342,7 @@ try {
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM member_tags').get().count, 1)
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM employee_tags').get().count, 1)
   assert.equal(database.prepare('PRAGMA foreign_key_check').all().length, 0)
+  assert.equal(database.prepare('PRAGMA quick_check').get().quick_check, 'ok')
   database.close()
 
   await stopServer(running.child)
