@@ -57,6 +57,15 @@ function verifyAdminToken(token, secret) {
   } catch { return null }
 }
 
+export function resolveNodeAdminActor({request,env,userRepository}) {
+  if (!userRepository?.findUser) return null
+  const token = verifyAdminToken(adminToken(request),env.ADMIN_TOKEN_SECRET)
+  if (!token) return null
+  const user = userRepository.findUser(token.userId)
+  if (!user || user.status !== 'active') return null
+  return {...token,userId:user.id,username:user.username,role:user.role,teamId:user.teamId || '',departmentId:user.departmentId || '',employeeId:user.employeeId || ''}
+}
+
 async function bodyJson(request) {
   try {
     const text = await request.text()
@@ -80,15 +89,14 @@ export async function handleNodeDirectRoute({request,env,requestId}) {
 
   const context = {request,env,requestId}
   try {
-    const tokenText = adminToken(request)
-    const token = verifyAdminToken(tokenText,env.ADMIN_TOKEN_SECRET)
+    const repository = path === '/admin/batch' ? env.BATCH_REPOSITORY : env.MAINTENANCE_REPOSITORY
+    if (!repository?.findUser) return null
+    const token = verifyAdminToken(adminToken(request),env.ADMIN_TOKEN_SECRET)
     if (!token) return withHeaders(fail('后台登录已失效',401),context)
     if (method !== 'GET' && !request.headers.get('authorization') && request.headers.get('x-lumirror-request') !== 'fetch') {
       return withHeaders(fail('缺少后台安全请求头',403,'CSRF_REQUIRED'),context)
     }
 
-    const repository = path === '/admin/batch' ? env.BATCH_REPOSITORY : env.MAINTENANCE_REPOSITORY
-    if (!repository?.findUser) return null
     const user = repository.findUser(token.userId)
     if (!user || user.status !== 'active') return withHeaders(fail('账号已停用或不存在',401),context)
     const session = {...token,userId:user.id,username:user.username,role:user.role,teamId:user.teamId || '',departmentId:user.departmentId || '',employeeId:user.employeeId || ''}
