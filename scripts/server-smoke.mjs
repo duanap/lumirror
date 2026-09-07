@@ -167,6 +167,21 @@ try {
   })
   assert.equal(passwordChange.status, 200)
 
+  const directPeriod = await call(running.baseUrl, '/admin/periods', {
+    method:'POST', cookie:adminCookie,
+    body:{name:'Direct SQL 测试周期',startTime:new Date(Date.now() - 60_000).toISOString(),endTime:new Date(Date.now() + 86_400_000).toISOString(),status:'active'}
+  })
+  assert.equal(directPeriod.status,200)
+  const updatedDirectPeriod = await call(running.baseUrl, `/admin/periods/${directPeriod.payload.data.id}`, {
+    method:'PUT',cookie:adminCookie,body:{name:'Direct SQL 测试周期（已更新）',startTime:directPeriod.payload.data.startTime,endTime:directPeriod.payload.data.endTime,status:'active'}
+  })
+  assert.equal(updatedDirectPeriod.status,200)
+  assert.equal(updatedDirectPeriod.payload.data.name,'Direct SQL 测试周期（已更新）')
+  const listedDirectPeriods = await call(running.baseUrl, '/admin/periods', {cookie:adminCookie})
+  assert.ok(listedDirectPeriods.payload.data.items.some((item) => item.id === directPeriod.payload.data.id))
+  const deletedDirectPeriod = await call(running.baseUrl, `/admin/periods/${directPeriod.payload.data.id}`, {method:'DELETE',cookie:adminCookie})
+  assert.equal(deletedDirectPeriod.status,200)
+
   const memberTag = await call(running.baseUrl, '/admin/member-tags', {
     method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
   })

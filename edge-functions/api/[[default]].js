@@ -200,6 +200,10 @@ function getTaskRepository(context) {
   const repository = context?.env?.TASK_REPOSITORY
   return repository && typeof repository.findCurrentTask === 'function' ? repository : null
 }
+function getPeriodRepository(context) {
+  const repository = context?.env?.PERIOD_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2252,6 +2256,24 @@ async function directAdminTasks(context) {
   return ok(repository.listAdminTasks(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
 }
 
+async function directAdminPeriods(context, path, method) {
+  const repository = getPeriodRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok({items:repository.list(),canWrite:access.session.role === 'admin'})
+  }
+  if (access.session.role !== 'admin') return fail('只有管理员可以执行此操作',403,'FORBIDDEN')
+  if (method === 'POST' && path === '/admin/periods') return ok(repository.create(await bodyJson(context.request)))
+  const match = path.match(/^\/admin\/periods\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request)))
+  if (method === 'DELETE') return ok(repository.delete(match[1]))
+  return null
+}
+
 async function directAdminVerifyCodes(context) {
   const repository = getTaskRepository(context)
   if (!repository || typeof repository.listVerifyCodes !== 'function') return null
@@ -2314,6 +2336,9 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if ((path === '/admin/periods' || path.startsWith('/admin/periods/')) && getPeriodRepository(context)) {
+      return withCors(await directAdminPeriods(context,path,method), context)
+    }
     if (path === '/public/timed-entry' && method === 'POST' && getTaskRepository(context)) {
       return withCors(await directTimedEntry(context), context)
     }
