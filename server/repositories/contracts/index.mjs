@@ -4,6 +4,7 @@ export const repositoryContracts = Object.freeze({
   UserRepository: contract('findById', 'findByUsername', 'create', 'update'),
   OrganizationRepository: contract('listDepartments', 'listTeams', 'listEmployees', 'create', 'update'),
   EvaluationRepository: contract('findById', 'listVisible', 'create', 'update'),
+  PeriodRepository: contract('list', 'create', 'update', 'delete'),
   TaskRepository: contract('findNextPending', 'listByEvaluation', 'markSubmitted'),
   ScoreRepository: contract('create', 'listByTarget', 'aggregateTrend'),
   InviteRepository: contract('create', 'findByCode', 'updateProgress'),

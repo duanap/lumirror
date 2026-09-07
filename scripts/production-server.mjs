@@ -3,9 +3,21 @@ import { randomUUID } from 'node:crypto'
 import { chmod, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import onRequest from '../edge-functions/api/[[default]].js'
+import { handleNodeDirectRoute, resolveNodeAdminActor } from '../server/node-direct-routes.mjs'
+import { runWithAuditActor } from '../server/request-context.mjs'
 import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 import { SqliteScoreRepository } from '../server/repositories/sqlite/score-repository.mjs'
+import { SqlitePublicScoreRepository } from '../server/repositories/sqlite/public-score-repository.mjs'
 import { SqliteTaskRepository } from '../server/repositories/sqlite/task-repository.mjs'
+import { SqlitePeriodRepository } from '../server/repositories/sqlite/period-repository.mjs'
+import { SqliteEvaluationRepository } from '../server/repositories/sqlite/evaluation-repository.mjs'
+import { SqliteEmployeeRepository } from '../server/repositories/sqlite/employee-repository.mjs'
+import { SqliteOrganizationRepository } from '../server/repositories/sqlite/organization-repository.mjs'
+import { SqliteUserRepository } from '../server/repositories/sqlite/user-repository.mjs'
+import { SqliteAuditRepository } from '../server/repositories/sqlite/audit-repository.mjs'
+import { SqliteSettingsRepository } from '../server/repositories/sqlite/settings-repository.mjs'
+import { SqliteBatchRepository } from '../server/repositories/sqlite/batch-repository.mjs'
+import { SqliteMaintenanceRepository } from '../server/repositories/sqlite/maintenance-repository.mjs'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 function requiredEnvironment(name) {
@@ -114,7 +126,17 @@ await mkdir(dataDir, { recursive: true, mode: 0o700 })
 await chmod(dataDir, 0o700)
 const storage = new RelationalSqliteStorage(databaseFile)
 const scoreRepository = new SqliteScoreRepository(storage)
+const publicScoreRepository = new SqlitePublicScoreRepository(storage,scoreRepository)
 const taskRepository = new SqliteTaskRepository(storage)
+const periodRepository = new SqlitePeriodRepository(storage)
+const evaluationRepository = new SqliteEvaluationRepository(storage)
+const employeeRepository = new SqliteEmployeeRepository(storage)
+const organizationRepository = new SqliteOrganizationRepository(storage)
+const userRepository = new SqliteUserRepository(storage)
+const auditRepository = new SqliteAuditRepository(storage)
+const settingsRepository = new SqliteSettingsRepository(storage)
+const batchRepository = new SqliteBatchRepository({storage,employeeRepository,userRepository,organizationRepository,periodRepository,evaluationRepository,taskRepository})
+const maintenanceRepository = new SqliteMaintenanceRepository(storage)
 await chmod(databaseFile, 0o600)
 
 const env = {
@@ -129,7 +151,17 @@ const env = {
   STORAGE_MODEL: 'sqlite-relational',
   EVALUATION_KV: storage,
   SCORE_REPOSITORY: scoreRepository,
-  TASK_REPOSITORY: taskRepository
+  PUBLIC_SCORE_REPOSITORY: publicScoreRepository,
+  TASK_REPOSITORY: taskRepository,
+  PERIOD_REPOSITORY: periodRepository,
+  EVALUATION_REPOSITORY: evaluationRepository,
+  EMPLOYEE_REPOSITORY: employeeRepository,
+  ORGANIZATION_REPOSITORY: organizationRepository,
+  USER_REPOSITORY: userRepository,
+  AUDIT_REPOSITORY: auditRepository,
+  SETTINGS_REPOSITORY: settingsRepository,
+  BATCH_REPOSITORY: batchRepository,
+  MAINTENANCE_REPOSITORY: maintenanceRepository
 }
 
 let requestQueue = Promise.resolve()
@@ -151,7 +183,11 @@ async function handleRequest(req, res) {
       headers,
       body: await requestBody(req)
     })
-    const response = await onRequest({ request, params: {}, env, requestId })
+    const actor = resolveNodeAdminActor({request,env,userRepository})
+    const response = await runWithAuditActor(actor,async () => {
+      const directResponse = await handleNodeDirectRoute({request,env,requestId})
+      return directResponse || await onRequest({ request, params: {}, env, requestId })
+    })
     status = response.status
     const body = await writeNodeResponse(res, response, requestId)
     errorCode = responseErrorCode(body)

@@ -167,10 +167,53 @@ try {
   })
   assert.equal(passwordChange.status, 200)
 
+  const directPeriod = await call(running.baseUrl, '/admin/periods', {
+    method:'POST', cookie:adminCookie,
+    body:{name:'Direct SQL 测试周期',startTime:new Date(Date.now() - 60_000).toISOString(),endTime:new Date(Date.now() + 86_400_000).toISOString(),status:'active'}
+  })
+  assert.equal(directPeriod.status,200)
+  const updatedDirectPeriod = await call(running.baseUrl, `/admin/periods/${directPeriod.payload.data.id}`, {
+    method:'PUT',cookie:adminCookie,body:{name:'Direct SQL 测试周期（已更新）',startTime:directPeriod.payload.data.startTime,endTime:directPeriod.payload.data.endTime,status:'active'}
+  })
+  assert.equal(updatedDirectPeriod.status,200)
+  assert.equal(updatedDirectPeriod.payload.data.name,'Direct SQL 测试周期（已更新）')
+  const listedDirectPeriods = await call(running.baseUrl, '/admin/periods', {cookie:adminCookie})
+  assert.ok(listedDirectPeriods.payload.data.items.some((item) => item.id === directPeriod.payload.data.id))
+  const deletedDirectPeriod = await call(running.baseUrl, `/admin/periods/${directPeriod.payload.data.id}`, {method:'DELETE',cookie:adminCookie})
+  assert.equal(deletedDirectPeriod.status,200)
+
+  const directDepartment = await call(running.baseUrl, '/admin/departments', {method:'POST',cookie:adminCookie,body:{name:'Direct SQL 部门',status:'active'}})
+  assert.equal(directDepartment.status,200)
+  const directTeam = await call(running.baseUrl, '/admin/teams', {method:'POST',cookie:adminCookie,body:{name:'Direct SQL 团队',departmentId:directDepartment.payload.data.id,status:'active',sort:99}})
+  assert.equal(directTeam.status,200)
+  const directTeams = await call(running.baseUrl, '/admin/teams', {cookie:adminCookie})
+  assert.ok(directTeams.payload.data.items.some((item) => item.id === directTeam.payload.data.id))
+  assert.equal((await call(running.baseUrl, `/admin/teams/${directTeam.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
+  assert.equal((await call(running.baseUrl, `/admin/departments/${directDepartment.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
+
+  const directUser = await call(running.baseUrl, '/admin/users', {method:'POST',cookie:adminCookie,body:{username:'directuser',displayName:'Direct 用户',password:'direct-user-password',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active',mustChangePassword:false}})
+  assert.equal(directUser.status,200)
+  const directUsers = await call(running.baseUrl, '/admin/users', {cookie:adminCookie})
+  assert.ok(directUsers.payload.data.items.some((item) => item.username === 'directuser'))
+  const updatedDirectUser = await call(running.baseUrl, `/admin/users/${directUser.payload.data.id}`, {method:'PUT',cookie:adminCookie,body:{displayName:'Direct 用户（更新）',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active'}})
+  assert.equal(updatedDirectUser.status,200)
+  assert.equal((await call(running.baseUrl, `/admin/users/${directUser.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
+
   const memberTag = await call(running.baseUrl, '/admin/member-tags', {
     method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
   })
   assert.equal(memberTag.status, 200)
+  const temporaryTag = await call(running.baseUrl, '/admin/member-tags', {method:'POST',cookie:adminCookie,body:{name:'Direct 临时标签'}})
+  assert.equal(temporaryTag.status,200)
+  const createdEmployeeDirect = await call(running.baseUrl, '/admin/employees', {
+    method:'POST',cookie:adminCookie,
+    body:{name:'Direct SQL 成员',gender:'male',departmentId:'dep_rd',teamId:'team_rd',position:'工程师',status:'active',avatar:'avatar_male_young_plain',tagIds:[temporaryTag.payload.data.id]}
+  })
+  assert.equal(createdEmployeeDirect.status,200)
+  assert.deepEqual(createdEmployeeDirect.payload.data.tagIds,[temporaryTag.payload.data.id])
+  const deletedTemporaryTag = await call(running.baseUrl, `/admin/member-tags/${temporaryTag.payload.data.id}`, {method:'DELETE',cookie:adminCookie})
+  assert.equal(deletedTemporaryTag.status,200)
+  assert.equal(deletedTemporaryTag.payload.data.detachedCount,1)
   const taggedEmployee = await call(running.baseUrl, '/admin/employees/emp_003', {
     method: 'PUT', cookie: adminCookie,
     body: { name:'王敏', gender:'female', departmentId:'dep_rd', teamId:'team_rd', position:'产品经理', status:'active', avatar:'avatar_female_young_plain', tagIds:[memberTag.payload.data.id] }
@@ -299,6 +342,7 @@ try {
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM member_tags').get().count, 1)
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM employee_tags').get().count, 1)
   assert.equal(database.prepare('PRAGMA foreign_key_check').all().length, 0)
+  assert.equal(database.prepare('PRAGMA quick_check').get().quick_check, 'ok')
   database.close()
 
   await stopServer(running.child)

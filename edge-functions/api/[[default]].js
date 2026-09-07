@@ -200,6 +200,34 @@ function getTaskRepository(context) {
   const repository = context?.env?.TASK_REPOSITORY
   return repository && typeof repository.findCurrentTask === 'function' ? repository : null
 }
+function getPeriodRepository(context) {
+  const repository = context?.env?.PERIOD_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
+function getEvaluationRepository(context) {
+  const repository = context?.env?.EVALUATION_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
+function getEmployeeRepository(context) {
+  const repository = context?.env?.EMPLOYEE_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
+function getOrganizationRepository(context) {
+  const repository = context?.env?.ORGANIZATION_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
+function getUserRepository(context) {
+  const repository = context?.env?.USER_REPOSITORY
+  return repository && typeof repository.findUser === 'function' ? repository : null
+}
+function getAuditRepository(context) {
+  const repository = context?.env?.AUDIT_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
+function getSettingsRepository(context) {
+  const repository = context?.env?.SETTINGS_REPOSITORY
+  return repository && typeof repository.get === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2252,6 +2280,192 @@ async function directAdminTasks(context) {
   return ok(repository.listAdminTasks(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
 }
 
+async function directAdminPeriods(context, path, method) {
+  const repository = getPeriodRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok({items:repository.list(),canWrite:access.session.role === 'admin'})
+  }
+  if (access.session.role !== 'admin') return fail('只有管理员可以执行此操作',403,'FORBIDDEN')
+  if (method === 'POST' && path === '/admin/periods') return ok(repository.create(await bodyJson(context.request)))
+  const match = path.match(/^\/admin\/periods\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request)))
+  if (method === 'DELETE') return ok(repository.delete(match[1]))
+  return null
+}
+
+async function directAdminEvaluations(context, path, method) {
+  const repository = getEvaluationRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (path === '/admin/evaluation-codes' && method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok(repository.list(access.session))
+  }
+  const match = path.match(/^\/admin\/evaluation-codes\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request),access.session))
+  if (method === 'DELETE') return ok(repository.delete(match[1],access.session))
+  return null
+}
+
+async function directAdminEmployees(context, path, method) {
+  const repository = getEmployeeRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const url = new URL(context.request.url)
+  if (path === '/admin/employees' && method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok(repository.list(access.session,{q:url.searchParams.get('q'),teamId:url.searchParams.get('teamId'),departmentId:url.searchParams.get('departmentId'),status:url.searchParams.get('status')}))
+  }
+  if (path === '/admin/employees' && method === 'POST') return ok(repository.create(await bodyJson(context.request),access.session))
+  const match = path.match(/^\/admin\/employees\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request),access.session))
+  if (method === 'DELETE') return ok(repository.delete(match[1],access.session))
+  return null
+}
+
+async function directAdminTags(context, path, method) {
+  const repository = getEmployeeRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (path === '/admin/member-tags' && method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok({items:repository.listTags(access.session),canCreate:access.session.role === 'admin' || access.session.role === 'team_leader',canManage:access.session.role === 'admin'})
+  }
+  if (path === '/admin/member-tags' && method === 'POST') return ok(repository.createTag(await bodyJson(context.request),access.session))
+  const match = path.match(/^\/admin\/member-tags\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.updateTag(match[1],await bodyJson(context.request),access.session))
+  if (method === 'DELETE') return ok(repository.deleteTag(match[1],access.session))
+  return null
+}
+
+async function directAdminOrganization(context, path, method) {
+  const repository = getOrganizationRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const match = path.match(/^\/admin\/(departments|teams)(?:\/([^/]+))?$/)
+  if (!match) return null
+  const kind = match[1]
+  if (method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok(repository.list(kind,access.session))
+  }
+  if (method === 'POST') return ok(repository.create(kind,await bodyJson(context.request),access.session))
+  if (match[2] && method === 'PUT') return ok(repository.update(kind,match[2],await bodyJson(context.request),access.session))
+  if (match[2] && method === 'DELETE') return ok(repository.delete(kind,match[2],access.session))
+  return null
+}
+
+async function directAdminLogin(context) {
+  const repository = getUserRepository(context)
+  if (!repository || typeof repository.login !== 'function') return null
+  const input = await bodyJson(context.request)
+  const user = repository.login(String(input.username || '').trim(),String(input.password || ''))
+  if (!user) return fail('账号或密码错误',401)
+  const maxAge = Number(getEnv(context,'ADMIN_SESSION_SECONDS','28800'))
+  const token = await signToken({kind:'backend',userId:user.id,username:user.username,role:user.role,teamId:user.teamId || '',departmentId:user.departmentId || '',employeeId:user.employeeId || ''},adminSecret(context),maxAge)
+  return json({success:true,user:roleView(user)},200,{'set-cookie':adminCookie(context,token,maxAge)})
+}
+
+async function directAdminUsers(context, path, method) {
+  const repository = getUserRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role !== 'admin') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  if (path === '/admin/users' && method === 'GET') return ok(repository.list())
+  if (path === '/admin/users' && method === 'POST') return ok(repository.create(await bodyJson(context.request)))
+  const match = path.match(/^\/admin\/users\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request)))
+  if (method === 'DELETE') return ok(repository.delete(match[1],access.session.userId))
+  return null
+}
+
+async function directAdminChangePassword(context) {
+  const repository = getUserRepository(context)
+  if (!repository || typeof repository.changePassword !== 'function') return null
+  const tokenSession = await requireAdmin(context)
+  if (!tokenSession) return fail('后台登录已失效',401)
+  const input = await bodyJson(context.request)
+  return ok(repository.changePassword(tokenSession.userId,input.currentPassword,input.newPassword))
+}
+
+async function directAdminLogs(context) {
+  const repository = getAuditRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const url = new URL(context.request.url)
+  return ok(repository.list(access.session,{limit:url.searchParams.get('limit'),offset:url.searchParams.get('offset'),action:url.searchParams.get('action'),actorId:url.searchParams.get('actorId'),role:url.searchParams.get('role'),startTime:url.searchParams.get('startTime'),endTime:url.searchParams.get('endTime')}))
+}
+
+async function directAdminSettings(context, path, method) {
+  const repository = getSettingsRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (path === '/admin/settings' && method === 'GET') return ok({...repository.get(),canEdit:access.session.role === 'admin'})
+  if (path === '/admin/settings' && method === 'PUT') {
+    if (access.session.role !== 'admin') return fail('只有管理员可以修改基础设置',403,'FORBIDDEN')
+    return ok(repository.update(await bodyJson(context.request)))
+  }
+  if (path === '/admin/settings/score-rules' && method === 'GET') {
+    if (!['admin','team_leader'].includes(access.session.role)) return fail('当前账号没有评分规则查看权限',403,'FORBIDDEN')
+    const url = new URL(context.request.url)
+    return ok(repository.scoreRules(url.searchParams.get('evaluationCodeId') || ''))
+  }
+  if (path === '/admin/settings/score-rules' && method === 'PUT') {
+    if (!['admin','team_leader'].includes(access.session.role)) return fail('当前账号没有修改评分规则权限',403,'FORBIDDEN')
+    const input = await bodyJson(context.request)
+    return ok(repository.updateScoreRules(input.evaluationCodeId,input))
+  }
+  return null
+}
+
+async function directPublicEvaluationTitle(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.findEvaluationTitle !== 'function') return null
+  const input = await bodyJson(context.request)
+  const result = repository.findEvaluationTitle(String(input.linkCode || '').trim())
+  if (!result) return fail('评价不存在或已结束',404,'NOT_FOUND')
+  return json({success:true,data:result})
+}
+
+async function directPublicVerifyEntry(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.openVerifyEntry !== 'function') return null
+  const input = await bodyJson(context.request)
+  if (!String(input.evaluationCode || '').trim() || !String(input.verifyCode || '').trim()) return fail('邀请链接和邀请码不能为空')
+  const result = repository.openVerifyEntry({linkCode:String(input.evaluationCode).trim(),verifyCode:String(input.verifyCode).trim().toUpperCase()})
+  if (!result) return fail(/^\d{6}$/.test(String(input.verifyCode || '')) ? '邀请码无效或与邀请链接不匹配' : '邀请码格式应为 6 位数字',403)
+  if (result.kind === 'ended') return fail('评价不存在或已结束',403)
+  if (result.kind === 'no-tasks') return fail('该邀请码没有可评价任务，请联系管理员检查评价对象设置',409,'NO_TASKS')
+  if (result.kind === 'completed') return fail('该邀请码已完成全部评价，不能重复填写',403,'COMPLETED')
+  const token = await signToken({role:'evaluator',evaluationCodeId:result.evaluationId,verifyCodeId:result.verifyId,evaluatorHash:result.evaluatorHash},evaluatorSecret(context),publicSessionSeconds(context,{settings:{publicSessionMinutes:repository.getPublicSessionSeconds(7200) / 60}}))
+  return json({success:true,token,evaluation:{id:result.evaluationId,name:result.evaluationName,teamName:result.teamName},remaining:result.remaining})
+}
+
+async function directAdminCreateActivity(context) {
+  const repository = getEvaluationRepository(context)
+  if (!repository || typeof repository.createActivity !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  return ok(repository.createActivity(await bodyJson(context.request),access.session))
+}
+
+
 async function directAdminVerifyCodes(context) {
   const repository = getTaskRepository(context)
   if (!repository || typeof repository.listVerifyCodes !== 'function') return null
@@ -2260,6 +2474,49 @@ async function directAdminVerifyCodes(context) {
   if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
   const url = new URL(context.request.url)
   return ok(repository.listVerifyCodes(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
+async function directAdminGenerateVerifyCodes(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.generateVerifyCodes !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const input = await bodyJson(context.request)
+  return ok(repository.generateVerifyCodes(input.evaluationCodeId,access.session,input))
+}
+
+async function directAdminGenerateTimedInvite(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.generateTimedInvite !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const input = await bodyJson(context.request)
+  return ok(repository.generateTimedInvite(input.evaluationCodeId,access.session))
+}
+
+async function directAdminGenerateTasks(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.generateTasks !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const input = await bodyJson(context.request)
+  return ok(repository.generateTasks(input.evaluationCodeId,access.session))
+}
+
+async function directAdminDeleteVerifyCode(context, verifyId) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.deleteVerifyCode !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  return ok(repository.deleteVerifyCode(verifyId,access.session))
+}
+
+async function directAdminDeleteTask(context, taskId) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.deleteTask !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  return ok(repository.deleteTask(taskId,access.session))
 }
 
 async function directAdminTimedInvites(context) {
@@ -2314,6 +2571,45 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if (path === '/public/evaluation-title' && method === 'POST' && getTaskRepository(context)?.findEvaluationTitle) {
+      return withCors(await directPublicEvaluationTitle(context), context)
+    }
+    if (path === '/public/verify-entry' && method === 'POST' && getTaskRepository(context)?.openVerifyEntry) {
+      return withCors(await directPublicVerifyEntry(context), context)
+    }
+    if (path === '/admin/login' && method === 'POST' && getUserRepository(context)?.hasUsers?.()) {
+      return withCors(await directAdminLogin(context), context)
+    }
+    if (path === '/admin/change-password' && method === 'POST' && getUserRepository(context)) {
+      return withCors(await directAdminChangePassword(context), context)
+    }
+    if ((path === '/admin/users' || path.startsWith('/admin/users/')) && getUserRepository(context)) {
+      return withCors(await directAdminUsers(context,path,method), context)
+    }
+    if (path === '/admin/logs' && method === 'GET' && getAuditRepository(context)) {
+      return withCors(await directAdminLogs(context), context)
+    }
+    if ((path === '/admin/settings' || path === '/admin/settings/score-rules') && getSettingsRepository(context)) {
+      return withCors(await directAdminSettings(context,path,method), context)
+    }
+    if ((path === '/admin/employees' || path.startsWith('/admin/employees/')) && getEmployeeRepository(context)) {
+      return withCors(await directAdminEmployees(context,path,method), context)
+    }
+    if ((path === '/admin/member-tags' || path.startsWith('/admin/member-tags/')) && getEmployeeRepository(context)) {
+      return withCors(await directAdminTags(context,path,method), context)
+    }
+    if (path === '/admin/departments' || path.startsWith('/admin/departments/') || path === '/admin/teams' || path.startsWith('/admin/teams/')) {
+      if (getOrganizationRepository(context)) return withCors(await directAdminOrganization(context,path,method), context)
+    }
+    if ((path === '/admin/evaluation-codes' || path.startsWith('/admin/evaluation-codes/')) && getEvaluationRepository(context)) {
+      return withCors(await directAdminEvaluations(context,path,method), context)
+    }
+    if (path === '/admin/evaluation-activities/create-flow' && method === 'POST' && getEvaluationRepository(context)?.createActivity) {
+      return withCors(await directAdminCreateActivity(context), context)
+    }
+    if ((path === '/admin/periods' || path.startsWith('/admin/periods/')) && getPeriodRepository(context)) {
+      return withCors(await directAdminPeriods(context,path,method), context)
+    }
     if (path === '/public/timed-entry' && method === 'POST' && getTaskRepository(context)) {
       return withCors(await directTimedEntry(context), context)
     }
@@ -2334,6 +2630,23 @@ export default async function onRequest(context) {
     }
     if (path === '/admin/tasks' && method === 'GET' && getTaskRepository(context)?.listAdminTasks) {
       return withCors(await directAdminTasks(context), context)
+    }
+    if (path === '/admin/verify-codes/generate' && method === 'POST' && getTaskRepository(context)?.generateVerifyCodes) {
+      return withCors(await directAdminGenerateVerifyCodes(context), context)
+    }
+    if (path === '/admin/timed-invites/generate' && method === 'POST' && getTaskRepository(context)?.generateTimedInvite) {
+      return withCors(await directAdminGenerateTimedInvite(context), context)
+    }
+    if (path === '/admin/tasks/generate' && method === 'POST' && getTaskRepository(context)?.generateTasks) {
+      return withCors(await directAdminGenerateTasks(context), context)
+    }
+    const directVerifyDelete = path.match(/^\/admin\/verify-codes\/([^/]+)$/)
+    if (directVerifyDelete && method === 'DELETE' && getTaskRepository(context)?.deleteVerifyCode) {
+      return withCors(await directAdminDeleteVerifyCode(context,directVerifyDelete[1]), context)
+    }
+    const directTaskDelete = path.match(/^\/admin\/tasks\/([^/]+)$/)
+    if (directTaskDelete && method === 'DELETE' && getTaskRepository(context)?.deleteTask) {
+      return withCors(await directAdminDeleteTask(context,directTaskDelete[1]), context)
     }
     if (path === '/admin/verify-codes' && method === 'GET' && getTaskRepository(context)?.listVerifyCodes) {
       return withCors(await directAdminVerifyCodes(context), context)
