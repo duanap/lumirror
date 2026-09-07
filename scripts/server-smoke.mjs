@@ -201,6 +201,12 @@ try {
   })
   assert.equal(entry.status, 200)
 
+  const currentTask = await call(running.baseUrl, '/public/current-task', { token: entry.payload.token })
+  assert.equal(currentTask.status, 200)
+  assert.equal(currentTask.payload.data.targetType, 'employee')
+  assert.equal(currentTask.payload.data.remaining, 2)
+  assert.equal(currentTask.payload.data.rules.length, 3)
+
   const tasks = await call(running.baseUrl, `/admin/tasks?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(tasks.status, 200)
   const taskIds = tasks.payload.data.items

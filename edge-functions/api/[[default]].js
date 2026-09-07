@@ -196,6 +196,10 @@ function getScoreRepository(context) {
   const repository = context?.env?.SCORE_REPOSITORY
   return repository && typeof repository.submitAtomic === 'function' ? repository : null
 }
+function getTaskRepository(context) {
+  const repository = context?.env?.TASK_REPOSITORY
+  return repository && typeof repository.findCurrentTask === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2119,6 +2123,28 @@ async function adminRoutes(context,path,method,db) {
   return fail('接口不存在',404)
 }
 
+async function directCurrentTask(context) {
+  const session = await requirePublic(context)
+  if (!session) return fail('评价会话已失效，请重新进入',401)
+  const repository = getTaskRepository(context)
+  if (!repository) return null
+  const result = repository.findCurrentTask({
+    evaluationId:session.evaluationCodeId, verifyId:session.verifyCodeId, timedInviteId:session.timedInviteId || ''
+  })
+  if (!result) return fail('评价活动不存在',404)
+  const state = activityStatus(result.evaluation)
+  if (state !== 'active') return fail(state === 'upcoming' ? '该评价活动尚未开始' : state === 'ended' ? '该评价活动已结束' : '该评价活动已停用',403)
+  if (result.timedInvite && ['completed','expired'].includes(result.timedInvite.status)) return fail('评价不存在或已结束',403,'EXPIRED')
+  if (result.timedInvite?.expiresAt && new Date(result.timedInvite.expiresAt).getTime() <= Date.now()) return fail('评价不存在或已结束',403,'EXPIRED')
+  if (!result.task) return fail(result.remaining === 0 ? '该邀请码已完成全部评价' : '没有待评价任务',404)
+  return ok({
+    id:result.task.id, target:result.task.target, targetType:result.task.targetType,
+    evaluation:{id:result.evaluation.id,name:result.evaluation.name,teamName:result.evaluation.teamName},
+    rules:result.rules, rounding:result.evaluation.rounding || 'one_decimal', remaining:result.remaining,
+    timed:Boolean(result.timedInvite), expiresAt:result.timedInvite?.expiresAt || null
+  })
+}
+
 export default async function onRequest(context) {
   if (context.request.method === 'OPTIONS') return withCors(new Response(null,{status:204,headers:JSON_HEADERS}), context)
   const url = new URL(context.request.url)
@@ -2161,6 +2187,9 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if (path === '/public/current-task' && method === 'GET' && getTaskRepository(context)) {
+      return withCors(await directCurrentTask(context), context)
+    }
     const db = await loadDatabase(context)
     expireTimedInvites(db)
     if (path.startsWith('/public/')) return withCors(await publicRoutes(context,path,method,db), context)

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { repositoryContracts } from '../server/repositories/contracts/index.mjs'
 
-const scripts = ['scripts/api-smoke.mjs', 'scripts/server-smoke.mjs']
+const scripts = ['scripts/api-smoke.mjs', 'scripts/server-smoke.mjs', 'scripts/current-task-repository-smoke.mjs']
 const expectedRepositories = ['UserRepository', 'OrganizationRepository', 'EvaluationRepository', 'TaskRepository', 'ScoreRepository', 'InviteRepository', 'AuditRepository']
 
 for (const name of expectedRepositories) {

@@ -71,6 +71,10 @@ export class RelationalSqliteStorage {
     return Number(this.database.prepare('PRAGMA user_version').get().user_version || 0)
   }
 
+  get snapshotReadCount() {
+    return this._snapshotReadCount || 0
+  }
+
   createSchema() {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS app_state (
@@ -264,6 +268,7 @@ export class RelationalSqliteStorage {
 
   async get(key, options = {}) {
     if (key !== DATABASE_KEY) return null
+    this._snapshotReadCount = (this._snapshotReadCount || 0) + 1
     const state = this.database.prepare('SELECT * FROM app_state WHERE singleton = 1').get()
     if (!state) return null
     if (Number(state.schema_version) !== SCHEMA_VERSION) throw new Error(`Unsupported relational schema version: ${state.schema_version}`)

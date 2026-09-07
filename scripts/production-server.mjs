@@ -5,6 +5,7 @@ import path from 'node:path'
 import onRequest from '../edge-functions/api/[[default]].js'
 import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 import { SqliteScoreRepository } from '../server/repositories/sqlite/score-repository.mjs'
+import { SqliteTaskRepository } from '../server/repositories/sqlite/task-repository.mjs'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 function requiredEnvironment(name) {
@@ -113,6 +114,7 @@ await mkdir(dataDir, { recursive: true, mode: 0o700 })
 await chmod(dataDir, 0o700)
 const storage = new RelationalSqliteStorage(databaseFile)
 const scoreRepository = new SqliteScoreRepository(storage)
+const taskRepository = new SqliteTaskRepository(storage)
 await chmod(databaseFile, 0o600)
 
 const env = {
@@ -126,7 +128,8 @@ const env = {
   PUBLIC_SESSION_SECONDS: process.env.PUBLIC_SESSION_SECONDS || '',
   STORAGE_MODEL: 'sqlite-relational',
   EVALUATION_KV: storage,
-  SCORE_REPOSITORY: scoreRepository
+  SCORE_REPOSITORY: scoreRepository,
+  TASK_REPOSITORY: taskRepository
 }
 
 let requestQueue = Promise.resolve()
