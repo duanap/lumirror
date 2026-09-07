@@ -143,7 +143,7 @@ export class SqliteUserRepository {
 
   changePassword(userId, currentPassword, newPassword) {
     const row = this.rowById(userId)
-    if (!row) throw appError('后台登录已失效',401)
+    if (!row || row.status !== 'active') throw appError('后台登录已失效',401)
     const user = {...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''}
     if (!this.verifyPassword(currentPassword,user)) throw appError('当前密码错误',403)
     if (String(newPassword).length < 8) throw appError('新密码至少 8 位')
