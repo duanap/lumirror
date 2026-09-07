@@ -59,7 +59,7 @@ export class SqliteBatchRepository {
       },
       users:{
         status:(id) => this.setUserStatus(id,status,session),
-        delete:(id) => { if (session.role !== 'admin') throw appError('当前账号没有此操作权限',403,'FORBIDDEN'); return this.userRepository.delete(id,session.userId) }
+        delete:(id) => { if (session.role !== 'admin') throw appError('当前账号没有此操作权限',403,'FORBIDDEN'); return this.userRepository.delete(id,session.userId,{audit:false}) }
       },
       departments:{
         status:(id) => this.organizationRepository.update('departments',id,{status},session),
