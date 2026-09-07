@@ -16,7 +16,10 @@
     "test:r2:concurrency": "node scripts/r2-concurrency.mjs",
     "check:snapshot-usage": "node scripts/snapshot-usage-gate.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",
-    "check:functions": "node --check \"edge-functions/api/[[default]].js\""
+    "check:functions": "node --check \"edge-functions/api/[[default]].js\"",
+    "docs:dev": "npx --yes @docmd/core@0.9.4 dev",
+    "docs:build": "npx --yes @docmd/core@0.9.4 build",
+    "docs:validate": "npx --yes @docmd/core@0.9.4 validate"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
