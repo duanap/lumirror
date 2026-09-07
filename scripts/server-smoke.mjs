@@ -82,7 +82,8 @@ async function call(baseUrl, route, { method = 'GET', token, cookie, body } = {}
   return {
     status: response.status,
     payload: await response.json(),
-    cookie: setCookie?.split(';')[0] || cookie || ''
+    cookie: setCookie?.split(';')[0] || cookie || '',
+    requestId: response.headers.get('x-request-id')
   }
 }
 
@@ -139,6 +140,10 @@ try {
   const health = await call(running.baseUrl, '/health')
   assert.equal(health.status, 200)
   assert.equal(health.payload.data.ready, true)
+  assert.match(health.requestId,/^[0-9a-f-]{36}$/)
+  assert.equal(health.payload.data.storageReady,true)
+  assert.equal(health.payload.data.storageType,'sqlite-relational')
+  assert.equal(health.payload.data.schemaVersion,4)
   assert.equal(health.payload.data.kvBound, true)
   assert.equal(health.payload.data.environment.storageModel, 'sqlite-relational')
 

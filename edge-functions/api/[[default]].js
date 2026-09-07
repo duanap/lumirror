@@ -7,6 +7,8 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 let memoryDatabase = null
 const rateBuckets = new Map()
+const requestIds = new WeakMap()
+const runtimeStartedAt = Date.now()
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 const PASSWORD_ALGORITHM = 'pbkdf2-sha256'
 const PASSWORD_ITERATIONS = 210000
@@ -170,6 +172,14 @@ function maskVerifyCode(code) { return `${'*'.repeat(Math.max(0, String(code).le
 function getEnv(context, name, fallback = '') {
   const value = context?.env?.[name]
   return value === undefined || value === null || value === '' ? fallback : String(value)
+}
+function requestId(context) {
+  if (!context || typeof context !== 'object') return randomId('req')
+  if (!requestIds.has(context)) {
+    const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : randomId('req')
+    requestIds.set(context,id)
+  }
+  return requestIds.get(context)
 }
 function isKvBinding(value) {
   return Boolean(value && typeof value === 'object' && typeof value.get === 'function' && typeof value.put === 'function')
@@ -455,6 +465,7 @@ const JSON_HEADERS = {
   'cross-origin-resource-policy':'same-origin',
   'access-control-allow-methods':'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'access-control-allow-headers':'content-type,authorization,x-lumirror-request',
+  'access-control-expose-headers':'x-request-id',
   'access-control-max-age':'600'
 }
 function json(data,status=200,extraHeaders = {}) {
@@ -500,6 +511,7 @@ function corsOrigin(context) {
 }
 function withCors(response, context) {
   const headers = new Headers(response.headers)
+  headers.set('x-request-id',requestId(context))
   const origin = corsOrigin(context)
   if (origin) {
     headers.set('access-control-allow-origin', origin)
@@ -516,6 +528,12 @@ function httpError(message, status = 400, code = 'BAD_REQUEST') {
   error.status = status
   error.code = code
   return error
+}
+function logInternalError(context, error) {
+  console.error(JSON.stringify({
+    timestamp:nowText(),requestId:requestId(context),level:'error',errorType:error?.name || 'Error',
+    errorMessage:String(error?.message || 'Unknown server error').slice(0,240)
+  }))
 }
 const bodyJson = async (request) => {
   const length = Number(request.headers.get('content-length') || 0)
@@ -2119,8 +2137,11 @@ export default async function onRequest(context) {
     const bootstrapReady = databasePresent || environment.initialAdminPasswordConfigured
     const storageReady = production ? Boolean(kv && kvReadable) : true
     const ready = Boolean(storageReady && environment.adminSecretConfigured && environment.publicSecretConfigured && (!production || bootstrapReady))
+    const schemaVersion = typeof kv?.getSchemaVersion === 'function' ? kv.getSchemaVersion() : null
     return withCors(json({success:ready,data:{
-      status:ready?'ok':'degraded',version:RUNTIME_VERSION,ready,kvBound:Boolean(kv),kvReadable,databasePresent,bootstrapReady,environment
+      status:ready?'ok':'degraded',version:RUNTIME_VERSION,ready,uptime:Math.floor((Date.now() - runtimeStartedAt) / 1000),
+      storageReady,storageType:environment.storageModel,schemaVersion,
+      kvBound:Boolean(kv),kvReadable,databasePresent,bootstrapReady,environment
     },...(ready?{}:{message:'部署尚未就绪，请检查 KV 绑定和 Functions 环境变量'})},ready?200:503), context)
   }
   try {
@@ -2132,8 +2153,8 @@ export default async function onRequest(context) {
     return withCors(fail('接口不存在',404), context)
   } catch (error) {
     if (Number(error?.status)) return withCors(fail(error.message || '请求失败',error.status,error.code), context)
-    console.error('[employee-review]',error)
+    logInternalError(context,error)
     const production = getEnv(context,'APP_ENV','development') === 'production'
-    return withCors(fail(production ? '服务器内部错误，请检查 Functions 日志和 KV 绑定' : String(error?.stack || error),500), context)
+    return withCors(fail(production ? '服务器内部错误，请检查 Functions 日志和 KV 绑定' : String(error?.stack || error),500,'INTERNAL_ERROR'), context)
   }
 }

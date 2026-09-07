@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { chmod, mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import onRequest from '../edge-functions/api/[[default]].js'
@@ -39,10 +40,62 @@ async function requestBody(req) {
   return chunks.length ? Buffer.concat(chunks) : undefined
 }
 
-function writeNodeResponse(res, response) {
-  const headers = Object.fromEntries(response.headers.entries())
-  res.writeHead(response.status, headers)
-  return response.arrayBuffer().then((body) => res.end(Buffer.from(body)))
+async function writeNodeResponse(res, response, requestId) {
+  const headers = new Headers(response.headers)
+  headers.set('x-request-id',requestId)
+  const body = Buffer.from(await response.arrayBuffer())
+  res.writeHead(response.status, Object.fromEntries(headers.entries()))
+  res.end(body)
+  return body
+}
+
+function routePath(req) {
+  return String(req.url || '/').split('?')[0] || '/'
+}
+
+function resourceType(route) {
+  const parts = route.replace(/^\/api\/?/,'').split('/').filter(Boolean)
+  return parts[1] || parts[0] || 'root'
+}
+
+function userRole(req) {
+  const authorization = String(req.headers.authorization || '')
+  const cookie = String(req.headers.cookie || '')
+  const token = authorization.replace(/^Bearer\s+/i,'') || cookie.match(/(?:^|;\s*)lumirror_admin=([^;]+)/)?.[1]
+  if (!token) return 'anonymous'
+  try {
+    const encoded = decodeURIComponent(token).split('.')[0]
+    const payload = JSON.parse(Buffer.from(encoded,'base64url').toString('utf8'))
+    return String(payload.role || 'authenticated')
+  } catch {
+    return 'authenticated'
+  }
+}
+
+function responseErrorCode(body) {
+  try {
+    const payload = JSON.parse(body.toString('utf8'))
+    return payload?.code || null
+  } catch {
+    return null
+  }
+}
+
+function logRequest({ requestId, method, route, status, durationMs, role, errorCode, internalError }) {
+  const level = status >= 500 || internalError ? 'error' : status >= 400 ? 'warn' : durationMs > 500 ? 'warn' : 'info'
+  const record = {
+    timestamp: new Date().toISOString(), requestId, method, route, status, durationMs,
+    userRole:role, resourceType:resourceType(route), errorCode:errorCode || null, level
+  }
+  if (durationMs > 2000) record.slowRequest = 'critical'
+  else if (durationMs > 500) record.slowRequest = 'slow'
+  console.log(JSON.stringify(record))
+  if (internalError) {
+    console.error(JSON.stringify({
+      timestamp:new Date().toISOString(),requestId,level:'error',errorType:internalError.name || 'Error',
+      errorMessage:String(internalError.message || 'Unknown server error').slice(0,240)
+    }))
+  }
 }
 
 const appEnv = process.env.APP_ENV || 'production'
@@ -76,6 +129,13 @@ const env = {
 let requestQueue = Promise.resolve()
 
 async function handleRequest(req, res) {
+  const startedAt = Date.now()
+  const requestId = randomUUID()
+  const route = routePath(req)
+  const role = userRole(req)
+  let status = 500
+  let errorCode = null
+  let internalError = null
   try {
     const headers = requestHeaders(req)
     const protocol = headers.get('x-forwarded-proto')?.split(',')[0]?.trim() || 'http'
@@ -85,19 +145,25 @@ async function handleRequest(req, res) {
       headers,
       body: await requestBody(req)
     })
-    const response = await onRequest({ request, params: {}, env })
-    await writeNodeResponse(res, response)
+    const response = await onRequest({ request, params: {}, env, requestId })
+    status = response.status
+    const body = await writeNodeResponse(res, response, requestId)
+    errorCode = responseErrorCode(body)
   } catch (error) {
+    internalError = Number(error?.status) >= 500 ? error : null
     if (res.headersSent) return res.end()
-    const status = Number(error?.status) || 500
+    status = Number(error?.status) || 500
+    errorCode = error?.code || (status === 413 ? 'PAYLOAD_TOO_LARGE' : status >= 500 ? 'INTERNAL_ERROR' : null)
     const message = status === 413 ? '请求体过大' : '服务器内部错误'
     res.writeHead(status, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff'
+      'x-content-type-options': 'nosniff',
+      'x-request-id': requestId
     })
     res.end(JSON.stringify({ success: false, message }))
-    if (status >= 500) console.error('[lumirror-server]', error)
+  } finally {
+    logRequest({requestId,method:req.method || 'GET',route,status,durationMs:Date.now() - startedAt,role,errorCode,internalError})
   }
 }
 

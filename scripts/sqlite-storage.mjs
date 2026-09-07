@@ -67,6 +67,10 @@ export class RelationalSqliteStorage {
     this.createSchema()
   }
 
+  getSchemaVersion() {
+    return Number(this.database.prepare('PRAGMA user_version').get().user_version || 0)
+  }
+
   createSchema() {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS app_state (
