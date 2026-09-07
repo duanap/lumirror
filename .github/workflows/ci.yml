@@ -44,6 +44,9 @@ jobs:
       - name: Run repository concurrency gate
         run: npm run test:r2:repository-concurrency
 
+      - name: Run queue removal contract
+        run: npm run test:r2:queue-removal
+
       - name: Run R2 golden behavior tests
         run: npm run test:golden
 

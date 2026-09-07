@@ -164,9 +164,6 @@ const env = {
   MAINTENANCE_REPOSITORY: maintenanceRepository
 }
 
-const requestQueueEnabled = process.env.LUMIRROR_REQUEST_QUEUE !== 'off'
-let requestQueue = Promise.resolve()
-
 async function handleRequest(req, res) {
   const startedAt = Date.now()
   const requestId = randomUUID()
@@ -211,12 +208,7 @@ async function handleRequest(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (!requestQueueEnabled) {
-    void handleRequest(req, res)
-    return
-  }
-  const current = requestQueue.then(() => handleRequest(req, res))
-  requestQueue = current.catch(() => {})
+  void handleRequest(req, res)
 })
 server.requestTimeout = 15_000
 server.headersTimeout = 10_000
@@ -229,7 +221,6 @@ server.listen(port, host, () => {
 async function shutdown(signal) {
   console.log(`Lumirror API received ${signal}; shutting down`)
   server.close(async () => {
-    await requestQueue
     storage.close()
     process.exit(0)
   })
