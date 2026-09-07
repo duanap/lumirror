@@ -7,6 +7,7 @@ import { handleNodeDirectRoute, resolveNodeAdminActor } from '../server/node-dir
 import { runWithAuditActor } from '../server/request-context.mjs'
 import { RelationalSqliteStorage } from './sqlite-storage.mjs'
 import { SqliteScoreRepository } from '../server/repositories/sqlite/score-repository.mjs'
+import { SqlitePublicScoreRepository } from '../server/repositories/sqlite/public-score-repository.mjs'
 import { SqliteTaskRepository } from '../server/repositories/sqlite/task-repository.mjs'
 import { SqlitePeriodRepository } from '../server/repositories/sqlite/period-repository.mjs'
 import { SqliteEvaluationRepository } from '../server/repositories/sqlite/evaluation-repository.mjs'
@@ -125,6 +126,7 @@ await mkdir(dataDir, { recursive: true, mode: 0o700 })
 await chmod(dataDir, 0o700)
 const storage = new RelationalSqliteStorage(databaseFile)
 const scoreRepository = new SqliteScoreRepository(storage)
+const publicScoreRepository = new SqlitePublicScoreRepository(storage,scoreRepository)
 const taskRepository = new SqliteTaskRepository(storage)
 const periodRepository = new SqlitePeriodRepository(storage)
 const evaluationRepository = new SqliteEvaluationRepository(storage)
@@ -149,6 +151,7 @@ const env = {
   STORAGE_MODEL: 'sqlite-relational',
   EVALUATION_KV: storage,
   SCORE_REPOSITORY: scoreRepository,
+  PUBLIC_SCORE_REPOSITORY: publicScoreRepository,
   TASK_REPOSITORY: taskRepository,
   PERIOD_REPOSITORY: periodRepository,
   EVALUATION_REPOSITORY: evaluationRepository,
