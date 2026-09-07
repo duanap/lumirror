@@ -121,6 +121,17 @@ try {
     userRepository.changePassword(user.id,'closeout-user-password','closeout-user-password-2')
     userRepository.delete(user.id,actor.userId)
 
+    const inactiveUser = userRepository.create({
+      username:'inactive_user',displayName:'Inactive User',password:'inactive-user-password',
+      role:'team_leader',teamId:'team_001',departmentId:'dep_001',status:'inactive',mustChangePassword:false
+    })
+    assert.throws(
+      () => userRepository.changePassword(inactiveUser.id,'inactive-user-password','inactive-user-password-2'),
+      (error) => error?.status === 401,
+      'inactive account must not change password with a stale session'
+    )
+    userRepository.delete(inactiveUser.id,actor.userId)
+
     const tag = employeeRepository.createTag({name:'Closeout 标签'},actor)
     employeeRepository.updateTag(tag.id,{name:'Closeout 标签更新'},actor)
     employeeRepository.create({
