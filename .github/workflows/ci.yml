@@ -35,6 +35,15 @@ jobs:
       - name: Run server smoke tests
         run: npm run test:server
 
+      - name: Run R2 golden behavior tests
+        run: npm run test:golden
+
+      - name: Run R2 concurrency tests
+        run: npm run test:r2:concurrency
+
+      - name: Report snapshot mutation usage
+        run: npm run check:snapshot-usage
+
       - name: Build production assets
         run: npm run build
 
