@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { appendAuditRecord } from './audit-repository.mjs'
 
 const json = (value) => JSON.stringify(value ?? null)
 const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
@@ -85,6 +86,7 @@ export class SqliteEmployeeRepository {
       this.database.prepare('INSERT INTO employees (id,department_id,team_id,name,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?)').run(employee.id,employee.departmentId,employee.teamId,employee.name,employee.status,json(payload),order)
       const tagInsert = this.database.prepare('INSERT INTO employee_tags (employee_id,tag_id,list_order) VALUES (?,?,?)')
       validTagIds.forEach((tagId,index) => tagInsert.run(employee.id,tagId,index))
+      appendAuditRecord(this.database,'employee.create',{employeeId:employee.id,teamId:employee.teamId},session,now)
       this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(now)
       this.database.exec('COMMIT')
       return employee
@@ -154,6 +156,7 @@ export class SqliteEmployeeRepository {
     try {
       const order = Number(this.database.prepare('SELECT COALESCE(MAX(list_order)+1,0) AS value FROM member_tags').get().value)
       this.database.prepare('INSERT INTO member_tags (id,name,payload_json,list_order) VALUES (?,?,?,?)').run(tag.id,tag.name,json(tag),order)
+      appendAuditRecord(this.database,'member_tag.create',{tagId:tag.id,name:tag.name},session,tag.createdAt)
       this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(tag.updatedAt)
       this.database.exec('COMMIT'); return {...tag,memberCount:0}
     } catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
@@ -161,22 +164,36 @@ export class SqliteEmployeeRepository {
 
   updateTag(tagId, input, session) {
     if (session.role !== 'admin') throw appError('只有管理员可以重命名成员标签',403,'FORBIDDEN')
-    const row = this.database.prepare('SELECT payload_json FROM member_tags WHERE id=?').get(tagId)
+    const row = this.database.prepare('SELECT name,payload_json FROM member_tags WHERE id=?').get(tagId)
     if (!row) throw appError('成员标签不存在',404,'NOT_FOUND')
     const name = String(input.name || '').trim().replace(/\s+/g,' ')
     if (!name || name.length > 20) throw appError('标签名称需为 1-20 个字符')
     if (this.database.prepare('SELECT 1 FROM member_tags WHERE lower(name)=lower(?) AND id != ?').get(name,tagId)) throw appError('标签名称已存在',409)
     const next = {...parseJson(row.payload_json),id:tagId,name,updatedAt:new Date().toISOString()}
-    this.database.prepare('UPDATE member_tags SET name=?,payload_json=? WHERE id=?').run(name,json(next),tagId)
-    return next
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.prepare('UPDATE member_tags SET name=?,payload_json=? WHERE id=?').run(name,json(next),tagId)
+      appendAuditRecord(this.database,'member_tag.rename',{tagId,previousName:row.name,name},session,next.updatedAt)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt)
+      this.database.exec('COMMIT')
+      return next
+    } catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
   }
 
   deleteTag(tagId, session) {
     if (session.role !== 'admin') throw appError('只有管理员可以删除成员标签',403,'FORBIDDEN')
-    if (!this.database.prepare('SELECT 1 FROM member_tags WHERE id=?').get(tagId)) throw appError('成员标签不存在',404,'NOT_FOUND')
+    const row = this.database.prepare('SELECT name FROM member_tags WHERE id=?').get(tagId)
+    if (!row) throw appError('成员标签不存在',404,'NOT_FOUND')
     const detachedCount = Number(this.database.prepare('SELECT COUNT(*) AS value FROM employee_tags WHERE tag_id=?').get(tagId).value || 0)
+    const updatedAt = new Date().toISOString()
     this.database.exec('BEGIN IMMEDIATE')
-    try { this.database.prepare('DELETE FROM member_tags WHERE id=?').run(tagId); this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(new Date().toISOString()); this.database.exec('COMMIT'); return {deleted:true,detachedCount} }
+    try {
+      this.database.prepare('DELETE FROM member_tags WHERE id=?').run(tagId)
+      appendAuditRecord(this.database,'member_tag.delete',{tagId,name:row.name,detachedCount},session,updatedAt)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(updatedAt)
+      this.database.exec('COMMIT')
+      return {deleted:true,detachedCount}
+    }
     catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
   }
 }
