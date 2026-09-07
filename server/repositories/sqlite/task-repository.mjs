@@ -19,6 +19,41 @@ export class SqliteTaskRepository {
     return Number.isFinite(Number(fallbackSeconds)) && Number(fallbackSeconds) > 0 ? Number(fallbackSeconds) : 7200
   }
 
+  findEvaluationTitle(linkCode) {
+    const row = this.database.prepare('SELECT name,status,start_time,end_time FROM evaluation_activities WHERE upper(link_code)=upper(?)').get(linkCode)
+    if (!row) return null
+    const now = Date.now(), start = new Date(row.start_time).getTime(), end = new Date(row.end_time).getTime()
+    if (row.status === 'disabled' || row.status === 'archived' || (Number.isFinite(start) && now < start) || (Number.isFinite(end) && now > end)) return null
+    return {name:row.name}
+  }
+
+  openVerifyEntry({linkCode, verifyCode}) {
+    // The evaluation ID is part of the code hash, so resolve the activity first without exposing the code.
+    const candidates = this.database.prepare(`
+      SELECT e.id AS evaluation_id,e.name AS evaluation_name,e.status AS evaluation_status,e.start_time,e.end_time,t.name AS team_name,
+        v.id AS verify_id,v.code_hash,v.status AS verify_status,v.payload_json AS verify_payload
+      FROM evaluation_activities e JOIN teams t ON t.id=e.team_id JOIN verification_codes v ON v.evaluation_id=e.id
+      WHERE upper(e.link_code)=upper(?)
+    `).all(linkCode)
+    const candidate = candidates.find((item) => item.code_hash === hash(`${item.evaluation_id}:${String(verifyCode || '').trim().toUpperCase()}`))
+    if (!candidate) return null
+    const nowMs = Date.now(), start = new Date(candidate.start_time).getTime(), end = new Date(candidate.end_time).getTime()
+    if (candidate.evaluation_status === 'disabled' || candidate.evaluation_status === 'archived' || (Number.isFinite(start) && nowMs < start) || (Number.isFinite(end) && nowMs > end)) return {kind:'ended'}
+    const progress = this.findProgress({evaluationId:candidate.evaluation_id,verifyId:candidate.verify_id})
+    if (!progress || progress.expected === 0) return {kind:'no-tasks'}
+    if (progress.remaining === 0 || candidate.verify_status === 'completed') return {kind:'completed'}
+    const payload = parseJson(candidate.verify_payload)
+    const firstUsedAt = payload.firstUsedAt || new Date().toISOString()
+    const updated = {...payload,firstUsedAt,lastUsedAt:new Date().toISOString(),status:'in_progress'}
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      this.database.prepare('UPDATE verification_codes SET status=?,payload_json=? WHERE id=?').run('in_progress',json(updated),candidate.verify_id)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(updated.lastUsedAt)
+      this.database.exec('COMMIT')
+      return {kind:'ready',evaluationId:candidate.evaluation_id,evaluationName:candidate.evaluation_name,teamName:candidate.team_name,verifyId:candidate.verify_id,evaluatorHash:payload.evaluatorHash,remaining:progress.remaining}
+    } catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
+  }
+
   findUser(userId) {
     const row = this.database.prepare('SELECT id, username, role, status, department_id, team_id, employee_id, payload_json FROM users WHERE id = ?').get(userId)
     if (!row) return null

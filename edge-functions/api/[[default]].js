@@ -2407,6 +2407,29 @@ async function directAdminLogs(context) {
   return ok(repository.list(access.session,{limit:url.searchParams.get('limit'),offset:url.searchParams.get('offset'),action:url.searchParams.get('action'),actorId:url.searchParams.get('actorId'),role:url.searchParams.get('role'),startTime:url.searchParams.get('startTime'),endTime:url.searchParams.get('endTime')}))
 }
 
+async function directPublicEvaluationTitle(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.findEvaluationTitle !== 'function') return null
+  const input = await bodyJson(context.request)
+  const result = repository.findEvaluationTitle(String(input.linkCode || '').trim())
+  if (!result) return fail('评价不存在或已结束',404,'NOT_FOUND')
+  return json({success:true,data:result})
+}
+
+async function directPublicVerifyEntry(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.openVerifyEntry !== 'function') return null
+  const input = await bodyJson(context.request)
+  if (!String(input.evaluationCode || '').trim() || !String(input.verifyCode || '').trim()) return fail('邀请链接和邀请码不能为空')
+  const result = repository.openVerifyEntry({linkCode:String(input.evaluationCode).trim(),verifyCode:String(input.verifyCode).trim().toUpperCase()})
+  if (!result) return fail(/^\d{6}$/.test(String(input.verifyCode || '')) ? '邀请码无效或与邀请链接不匹配' : '邀请码格式应为 6 位数字',403)
+  if (result.kind === 'ended') return fail('评价不存在或已结束',403)
+  if (result.kind === 'no-tasks') return fail('该邀请码没有可评价任务，请联系管理员检查评价对象设置',409,'NO_TASKS')
+  if (result.kind === 'completed') return fail('该邀请码已完成全部评价，不能重复填写',403,'COMPLETED')
+  const token = await signToken({role:'evaluator',evaluationCodeId:result.evaluationId,verifyCodeId:result.verifyId,evaluatorHash:result.evaluatorHash},evaluatorSecret(context),publicSessionSeconds(context,{settings:{publicSessionMinutes:repository.getPublicSessionSeconds(7200) / 60}}))
+  return json({success:true,token,evaluation:{id:result.evaluationId,name:result.evaluationName,teamName:result.teamName},remaining:result.remaining})
+}
+
 async function directAdminCreateActivity(context) {
   const repository = getEvaluationRepository(context)
   if (!repository || typeof repository.createActivity !== 'function') return null
@@ -2521,6 +2544,12 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if (path === '/public/evaluation-title' && method === 'POST' && getTaskRepository(context)?.findEvaluationTitle) {
+      return withCors(await directPublicEvaluationTitle(context), context)
+    }
+    if (path === '/public/verify-entry' && method === 'POST' && getTaskRepository(context)?.openVerifyEntry) {
+      return withCors(await directPublicVerifyEntry(context), context)
+    }
     if (path === '/admin/login' && method === 'POST' && getUserRepository(context)?.hasUsers?.()) {
       return withCors(await directAdminLogin(context), context)
     }
