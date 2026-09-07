@@ -26,6 +26,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependencies
+        run: npm audit
+
       - name: Check EdgeOne function syntax
         run: npm run check:functions
 
@@ -41,8 +44,11 @@ jobs:
       - name: Run R2 concurrency tests
         run: npm run test:r2:concurrency
 
-      - name: Report snapshot mutation usage
-        run: npm run check:snapshot-usage
+      - name: Run R2 domain closeout tests
+        run: npm run test:r2:domain-closeout
+
+      - name: Enforce normal snapshot mutation zero
+        run: npm run check:snapshot-usage -- --expect-clean
 
       - name: Build production assets
         run: npm run build
