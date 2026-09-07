@@ -224,6 +224,10 @@ function getAuditRepository(context) {
   const repository = context?.env?.AUDIT_REPOSITORY
   return repository && typeof repository.list === 'function' ? repository : null
 }
+function getSettingsRepository(context) {
+  const repository = context?.env?.SETTINGS_REPOSITORY
+  return repository && typeof repository.get === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2407,6 +2411,29 @@ async function directAdminLogs(context) {
   return ok(repository.list(access.session,{limit:url.searchParams.get('limit'),offset:url.searchParams.get('offset'),action:url.searchParams.get('action'),actorId:url.searchParams.get('actorId'),role:url.searchParams.get('role'),startTime:url.searchParams.get('startTime'),endTime:url.searchParams.get('endTime')}))
 }
 
+async function directAdminSettings(context, path, method) {
+  const repository = getSettingsRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (path === '/admin/settings' && method === 'GET') return ok({...repository.get(),canEdit:access.session.role === 'admin'})
+  if (path === '/admin/settings' && method === 'PUT') {
+    if (access.session.role !== 'admin') return fail('只有管理员可以修改基础设置',403,'FORBIDDEN')
+    return ok(repository.update(await bodyJson(context.request)))
+  }
+  if (path === '/admin/settings/score-rules' && method === 'GET') {
+    if (!['admin','team_leader'].includes(access.session.role)) return fail('当前账号没有评分规则查看权限',403,'FORBIDDEN')
+    const url = new URL(context.request.url)
+    return ok(repository.scoreRules(url.searchParams.get('evaluationCodeId') || ''))
+  }
+  if (path === '/admin/settings/score-rules' && method === 'PUT') {
+    if (!['admin','team_leader'].includes(access.session.role)) return fail('当前账号没有修改评分规则权限',403,'FORBIDDEN')
+    const input = await bodyJson(context.request)
+    return ok(repository.updateScoreRules(input.evaluationCodeId,input))
+  }
+  return null
+}
+
 async function directPublicEvaluationTitle(context) {
   const repository = getTaskRepository(context)
   if (!repository || typeof repository.findEvaluationTitle !== 'function') return null
@@ -2561,6 +2588,9 @@ export default async function onRequest(context) {
     }
     if (path === '/admin/logs' && method === 'GET' && getAuditRepository(context)) {
       return withCors(await directAdminLogs(context), context)
+    }
+    if ((path === '/admin/settings' || path === '/admin/settings/score-rules') && getSettingsRepository(context)) {
+      return withCors(await directAdminSettings(context,path,method), context)
     }
     if ((path === '/admin/employees' || path.startsWith('/admin/employees/')) && getEmployeeRepository(context)) {
       return withCors(await directAdminEmployees(context,path,method), context)
