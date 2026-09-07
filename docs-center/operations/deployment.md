@@ -5,6 +5,17 @@ description: "Node + SQLite + PM2 + Nginx 的生产部署和发布检查。"
 
 # 生产部署
 
+## 当前发布状态
+
+截至 2026-09-07：
+
+- Production：**v1.5.0**
+- Repository baseline：**v1.5.1 + 已合并的 Backend R2 评分链**
+- Backend R2 production deploy：**NO**
+- SQLite Schema：**4**
+
+不要因为 PR 已合并或 `main` 已前进，就把未完成的 R2 当作当前生产行为。
+
 ## 生产组件
 
 Lumirror 当前使用：

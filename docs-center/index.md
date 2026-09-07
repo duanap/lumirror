@@ -43,10 +43,16 @@ Lumirror 是面向企业和团队的匿名评价系统。它把评价参与、�
 - **成员标签不是 RBAC。** 标签只用于元数据和筛选，不改变账号权限。
 - **匿名边界优先。** 公开评价端不能泄露评价人身份或个人评分结果。
 
-## 当前版本
+## 当前版本与生产状态
+
+截至 2026-09-07：
 
 - 正式 Git 基线：**v1.5.1**
+- 当前生产版本：**v1.5.0**
 - SQLite Schema：**4**
-- Backend R2：评分链 Direct SQLite 已完成并合并；Domain CRUD、requestQueue 移除和 EdgeOne 清理仍是后续工作。
+- Backend R2：评分链 Direct SQLite 已合并到 `main`，但 **尚未部署生产**。
+- Domain CRUD、requestQueue 移除和 EdgeOne 清理仍是后续阶段。
 
-[查看 v1.5.1 版本说明 →](/releases/v1.5.1/)
+Git 合并状态和生产发布状态必须分开判断。
+
+[查看版本说明 →](/releases/)

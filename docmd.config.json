@@ -109,6 +109,9 @@
     { "title": "GitHub", "path": "https://github.com/duanap/lumirror", "icon": "github", "external": true }
   ],
   "plugins": {
+    "ai": {
+      "assistant": false
+    },
     "mermaid": true,
     "git": {
       "commitHistory": true,

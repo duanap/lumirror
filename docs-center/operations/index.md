@@ -5,6 +5,8 @@ description: "Lumirror 当前生产架构、运行约束和运维边界。"
 
 # 部署运维
 
+截至 2026-09-07，当前生产仍运行 **v1.5.0**。仓库 `main` 已包含 v1.5.1 和 Backend R2 评分链，但这些后续 Git 变更尚未部署到生产。
+
 当前正式生产架构为：
 
 ```text
@@ -23,6 +25,7 @@ SQLite
 
 ## 当前运行约束
 
+- Production Version：1.5.0
 - SQLite Schema Version：4
 - `requestQueue`：保留
 - PM2：单实例、fork 模式
