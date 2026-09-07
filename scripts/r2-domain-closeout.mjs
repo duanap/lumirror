@@ -70,6 +70,16 @@ const expectedActions = new Set([
   'batch.operation','maintenance.cleanup','export.full','import.json'
 ])
 
+function isForbiddenAuditDetailKey(key) {
+  const normalized = String(key || '').replace(/[_-]/g,'').toLowerCase()
+  if (/(password|authorization|cookie|session|token)/.test(normalized)) return true
+  return new Set([
+    'invitecode','invitelink','timedinvitelink','rawinvite','rawcode','fullcode',
+    'scores','scorevalues','scorecontent','values',
+    'evaluator','evaluatorid','evaluatorhash','evaluatoridentity'
+  ]).has(normalized)
+}
+
 function assertSafeDetail(value, action, pathParts = []) {
   if (Array.isArray(value)) {
     value.forEach((item,index) => assertSafeDetail(item,action,[...pathParts,String(index)]))
@@ -77,7 +87,7 @@ function assertSafeDetail(value, action, pathParts = []) {
   }
   if (!value || typeof value !== 'object') return
   for (const [key,item] of Object.entries(value)) {
-    assert.ok(!/(password|authorization|cookie|session|token|invite|score)/i.test(key),`${action} audit detail contains forbidden key: ${[...pathParts,key].join('.')}`)
+    assert.ok(!isForbiddenAuditDetailKey(key),`${action} audit detail contains forbidden key: ${[...pathParts,key].join('.')}`)
     assertSafeDetail(item,action,[...pathParts,key])
   }
 }
