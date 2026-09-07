@@ -192,6 +192,10 @@ function getKvBinding(context) {
   return isKvBinding(contextual) ? contextual : null
 }
 function hasPersistentKV(context) { return isKvBinding(getKvBinding(context)) }
+function getScoreRepository(context) {
+  const repository = context?.env?.SCORE_REPOSITORY
+  return repository && typeof repository.submitAtomic === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -1290,7 +1294,7 @@ async function publicRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const task = db.tasks.find((x) => x.id === input.taskId && x.verifyCodeId === verify.id && x.evaluationCodeId === evaluation.id)
     if (!task) return fail('评价任务不存在',404)
-    if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409)
+    if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409,'TASK_ALREADY_SUBMITTED')
     const values = input.scores || {}
     for (const rule of evaluation.rules.filter((x) => x.enabled)) {
       const value = Number(values[rule.id])
@@ -1299,12 +1303,13 @@ async function publicRoutes(context,path,method,db) {
     const total = computeTotal(values,evaluation.rules,evaluation.rounding)
     if (total === null) return fail('评分数据无效')
     const scoreId = `score_${await sha256(`${verify.id}:${task.id}`)}`
-    if (db.scores.some((x) => x.id === scoreId || x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409)
+    if (db.scores.some((x) => x.id === scoreId || x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409,'TASK_ALREADY_SUBMITTED')
     const anonymousToken = await sha256(`${verify.evaluatorHash}:${task.id}`)
-    db.scores.push({
+    const score = {
       id:scoreId, evaluationCodeId:evaluation.id, taskId:task.id,
       ...targetReference(itemTargetType(task,evaluation),itemTargetId(task,evaluation)),anonymousToken, values:copyJson(values), total, createdAt:nowText()
-    })
+    }
+    db.scores.push(score)
     task.status = 'submitted'
     task.submittedAt = nowText()
     syncVerifyProgress(db,verify)
@@ -1312,7 +1317,17 @@ async function publicRoutes(context,path,method,db) {
       timedInvite.status = 'completed'
       timedInvite.completedAt = nowText()
     }
-    await saveDatabase(context,db)
+    const scoreRepository = getScoreRepository(context)
+    if (scoreRepository) {
+      try {
+        scoreRepository.submitAtomic({evaluationId:evaluation.id,verifyId:verify.id,taskId:task.id,score,task,verify,timedInvite})
+      } catch (error) {
+        if (error?.code === 'TASK_ALREADY_SUBMITTED') return fail('该评价对象已评价，不能重复提交',409,error.code)
+        throw error
+      }
+    } else {
+      await saveDatabase(context,db)
+    }
     return ok({remaining:verify.remaining,completed:verify.remaining===0,total,timed:Boolean(timedInvite),expiresAt:timedInvite?.expiresAt || null})
   }
   if (path === '/public/logout' && method === 'POST') return ok({loggedOut:true})

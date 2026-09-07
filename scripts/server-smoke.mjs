@@ -214,6 +214,12 @@ try {
     body: { taskId, scores: { ability: 90, attitude: 90, collaboration: 90 } }
   })))
   assert.ok(submissions.every((submission) => submission.status === 200))
+  const duplicateSubmission = await call(running.baseUrl, '/public/submit-score', {
+    method: 'POST', token: entry.payload.token,
+    body: { taskId: taskIds[0], scores: { ability: 90, attitude: 90, collaboration: 90 } }
+  })
+  assert.equal(duplicateSubmission.status, 409)
+  assert.equal(duplicateSubmission.payload.code, 'TASK_ALREADY_SUBMITTED')
 
   const results = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(results.status, 200)
