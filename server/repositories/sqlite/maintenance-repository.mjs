@@ -209,7 +209,11 @@ export class SqliteMaintenanceRepository {
     const snapshot = migrateImportDatabase(candidate,current.users || [])
     snapshot.logs = Array.isArray(snapshot.logs) ? snapshot.logs : []
     snapshot.logs.push(createAuditRecord('import.json',{employees:snapshot.employees.length,evaluationCodes:snapshot.evaluationCodes.length},actor))
-    await this.storage.put(DATABASE_KEY,snapshot)
+    try {
+      await this.storage.put(DATABASE_KEY,snapshot)
+    } catch {
+      throw appError('KV 写入失败，请检查 KV 命名空间绑定和 Functions 权限',503,'KV_WRITE_FAILED')
+    }
     return {imported:true}
   }
 
