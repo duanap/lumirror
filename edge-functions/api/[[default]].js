@@ -216,6 +216,10 @@ function getOrganizationRepository(context) {
   const repository = context?.env?.ORGANIZATION_REPOSITORY
   return repository && typeof repository.list === 'function' ? repository : null
 }
+function getUserRepository(context) {
+  const repository = context?.env?.USER_REPOSITORY
+  return repository && typeof repository.findUser === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2355,6 +2359,41 @@ async function directAdminOrganization(context, path, method) {
   return null
 }
 
+async function directAdminLogin(context) {
+  const repository = getUserRepository(context)
+  if (!repository || typeof repository.login !== 'function') return null
+  const input = await bodyJson(context.request)
+  const user = repository.login(String(input.username || '').trim(),String(input.password || ''))
+  if (!user) return fail('账号或密码错误',401)
+  const maxAge = Number(getEnv(context,'ADMIN_SESSION_SECONDS','28800'))
+  const token = await signToken({kind:'backend',userId:user.id,username:user.username,role:user.role,teamId:user.teamId || '',departmentId:user.departmentId || '',employeeId:user.employeeId || ''},adminSecret(context),maxAge)
+  return json({success:true,user:roleView(user)},200,{'set-cookie':adminCookie(context,token,maxAge)})
+}
+
+async function directAdminUsers(context, path, method) {
+  const repository = getUserRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role !== 'admin') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  if (path === '/admin/users' && method === 'GET') return ok(repository.list())
+  if (path === '/admin/users' && method === 'POST') return ok(repository.create(await bodyJson(context.request)))
+  const match = path.match(/^\/admin\/users\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request)))
+  if (method === 'DELETE') return ok(repository.delete(match[1],access.session.userId))
+  return null
+}
+
+async function directAdminChangePassword(context) {
+  const repository = getUserRepository(context)
+  if (!repository || typeof repository.changePassword !== 'function') return null
+  const tokenSession = await requireAdmin(context)
+  if (!tokenSession) return fail('后台登录已失效',401)
+  const input = await bodyJson(context.request)
+  return ok(repository.changePassword(tokenSession.userId,input.currentPassword,input.newPassword))
+}
+
 async function directAdminCreateActivity(context) {
   const repository = getEvaluationRepository(context)
   if (!repository || typeof repository.createActivity !== 'function') return null
@@ -2469,6 +2508,15 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if (path === '/admin/login' && method === 'POST' && getUserRepository(context)?.hasUsers?.()) {
+      return withCors(await directAdminLogin(context), context)
+    }
+    if (path === '/admin/change-password' && method === 'POST' && getUserRepository(context)) {
+      return withCors(await directAdminChangePassword(context), context)
+    }
+    if ((path === '/admin/users' || path.startsWith('/admin/users/')) && getUserRepository(context)) {
+      return withCors(await directAdminUsers(context,path,method), context)
+    }
     if ((path === '/admin/employees' || path.startsWith('/admin/employees/')) && getEmployeeRepository(context)) {
       return withCors(await directAdminEmployees(context,path,method), context)
     }

@@ -191,6 +191,14 @@ try {
   assert.equal((await call(running.baseUrl, `/admin/teams/${directTeam.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
   assert.equal((await call(running.baseUrl, `/admin/departments/${directDepartment.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
 
+  const directUser = await call(running.baseUrl, '/admin/users', {method:'POST',cookie:adminCookie,body:{username:'directuser',displayName:'Direct 用户',password:'direct-user-password',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active',mustChangePassword:false}})
+  assert.equal(directUser.status,200)
+  const directUsers = await call(running.baseUrl, '/admin/users', {cookie:adminCookie})
+  assert.ok(directUsers.payload.data.items.some((item) => item.username === 'directuser'))
+  const updatedDirectUser = await call(running.baseUrl, `/admin/users/${directUser.payload.data.id}`, {method:'PUT',cookie:adminCookie,body:{displayName:'Direct 用户（更新）',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active'}})
+  assert.equal(updatedDirectUser.status,200)
+  assert.equal((await call(running.baseUrl, `/admin/users/${directUser.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
+
   const memberTag = await call(running.baseUrl, '/admin/member-tags', {
     method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
   })

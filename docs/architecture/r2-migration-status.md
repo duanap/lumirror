@@ -30,7 +30,7 @@ Snapshot path and are listed under the later Domain CRUD migration.
 - [x] member tags
 - [x] departments
 - [x] teams
-- [ ] users
+- [x] users
 - [ ] audit
 - [ ] import/export
 

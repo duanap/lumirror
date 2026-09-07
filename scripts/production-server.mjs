@@ -10,6 +10,7 @@ import { SqlitePeriodRepository } from '../server/repositories/sqlite/period-rep
 import { SqliteEvaluationRepository } from '../server/repositories/sqlite/evaluation-repository.mjs'
 import { SqliteEmployeeRepository } from '../server/repositories/sqlite/employee-repository.mjs'
 import { SqliteOrganizationRepository } from '../server/repositories/sqlite/organization-repository.mjs'
+import { SqliteUserRepository } from '../server/repositories/sqlite/user-repository.mjs'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 function requiredEnvironment(name) {
@@ -123,6 +124,7 @@ const periodRepository = new SqlitePeriodRepository(storage)
 const evaluationRepository = new SqliteEvaluationRepository(storage)
 const employeeRepository = new SqliteEmployeeRepository(storage)
 const organizationRepository = new SqliteOrganizationRepository(storage)
+const userRepository = new SqliteUserRepository(storage)
 await chmod(databaseFile, 0o600)
 
 const env = {
@@ -141,7 +143,8 @@ const env = {
   PERIOD_REPOSITORY: periodRepository,
   EVALUATION_REPOSITORY: evaluationRepository,
   EMPLOYEE_REPOSITORY: employeeRepository,
-  ORGANIZATION_REPOSITORY: organizationRepository
+  ORGANIZATION_REPOSITORY: organizationRepository,
+  USER_REPOSITORY: userRepository
 }
 
 let requestQueue = Promise.resolve()
