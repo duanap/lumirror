@@ -37,6 +37,15 @@ const leaderActor = {
   employeeId:''
 }
 
+const teamLeaderActor = {
+  userId:'user_team_leader',
+  username:'team_leader',
+  role:'team_leader',
+  teamId:'team_001',
+  departmentId:'dep_001',
+  employeeId:''
+}
+
 const initial = {
   version:4,
   createdAt:'2026-09-07T00:00:00.000Z',
@@ -159,6 +168,30 @@ try {
     )
     evaluationRepository.update(evaluationId,{status:'active'},actor)
 
+    const otherDepartment = organizationRepository.create('departments',{name:'隔离测试部门',status:'active'},actor)
+    const otherTeam = organizationRepository.create('teams',{name:'隔离测试团队',departmentId:otherDepartment.id,status:'active'},actor)
+    const otherCreated = evaluationRepository.createActivity({
+      name:'跨团队评分规则隔离测试',teamId:otherTeam.id,participantMode:'quantity',participantCount:1,
+      targetType:'team',targetMode:'selected',targetTeamIds:[otherTeam.id],
+      startTime:new Date(now - 120_000).toISOString(),endTime:new Date(now + 3_600_000).toISOString()
+    },actor)
+    const scopedRules = settingsRepository.scoreRules(otherCreated.activity.id,teamLeaderActor)
+    assert.equal(scopedRules.evaluation.id,evaluationId,'team leader score-rule GET must not expose another team evaluation')
+    assert.ok(scopedRules.activities.every((item) => item.id !== otherCreated.activity.id),'team leader activities must remain team scoped')
+    assert.ok(Array.isArray(scopedRules.periods),'score-rule GET must preserve period options')
+    assert.throws(
+      () => settingsRepository.updateScoreRules(otherCreated.activity.id,{rules:created.activity.rules},teamLeaderActor),
+      (error) => error?.status === 404 && error?.code === 'NOT_FOUND',
+      'team leader must not update another team score rules'
+    )
+    const rulesBeforeInvalidUpdate = settingsRepository.scoreRules(evaluationId,teamLeaderActor).rules
+    assert.throws(
+      () => settingsRepository.updateScoreRules(evaluationId,{rules:[{id:'invalid_weight',name:'无效权重',min:0,max:99,weight:50,operation:'add',enabled:true}]},teamLeaderActor),
+      (error) => error?.status === 400,
+      'invalid score-rule net weight must be rejected'
+    )
+    assert.deepEqual(settingsRepository.scoreRules(evaluationId,teamLeaderActor).rules,rulesBeforeInvalidUpdate,'invalid score-rule write must not mutate rules')
+
     const batch = batchRepository.run(actor,{resource:'employees',action:'status',status:'inactive',ids:['emp_002']})
     assert.equal(batch.successCount,1)
     assert.equal(batch.failureCount,0)
@@ -191,7 +224,7 @@ try {
 
   const auditList = auditRepository.list(actor,{limit:200})
   assert.ok(auditList.items.length >= expectedActions.size)
-  console.log('R2 domain closeout gate passed: audit coverage, RBAC, archived read-only contract, maintenance boundary, schema 4 and integrity checks')
+  console.log('R2 domain closeout gate passed: audit coverage, RBAC, score-rule scope, archived read-only contract, maintenance boundary, schema 4 and integrity checks')
 } finally {
   storage.close()
   await rm(dataDir,{recursive:true,force:true})
