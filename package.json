@@ -14,6 +14,8 @@
     "test:golden": "node scripts/r2-golden.mjs",
     "test:r2:current-task": "node scripts/current-task-repository-smoke.mjs",
     "test:r2:concurrency": "node scripts/r2-concurrency.mjs",
+    "test:r2:http-concurrency": "node scripts/r2-concurrency.mjs",
+    "test:r2:repository-concurrency": "node scripts/r2-repository-concurrency.mjs",
     "test:r2:domain-closeout": "node scripts/r2-domain-closeout.mjs && node scripts/r2-participant-invite-contract.mjs",
     "check:snapshot-usage": "node scripts/snapshot-usage-gate.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",

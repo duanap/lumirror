@@ -24,7 +24,7 @@ async function availablePort() {
 const port = await availablePort()
 const child = spawn(process.execPath, ['scripts/production-server.mjs'], {
   cwd:projectRoot,
-  env:{...process.env,APP_ENV:'production',HOST:'127.0.0.1',PORT:String(port),DATA_DIR:dataDir,ADMIN_TOKEN_SECRET:'r2-admin-secret',PUBLIC_TOKEN_SECRET:'r2-public-secret',INITIAL_ADMIN_PASSWORD:initialPassword},
+  env:{...process.env,LUMIRROR_REQUEST_QUEUE:'off',APP_ENV:'production',HOST:'127.0.0.1',PORT:String(port),DATA_DIR:dataDir,ADMIN_TOKEN_SECRET:'r2-admin-secret',PUBLIC_TOKEN_SECRET:'r2-public-secret',INITIAL_ADMIN_PASSWORD:initialPassword},
   stdio:['ignore','ignore','pipe']
 })
 let stderr = ''
@@ -87,7 +87,25 @@ try {
   const adminCookie = login.cookie
   assert.equal((await call('/admin/change-password',{method:'POST',cookie:adminCookie,body:{currentPassword:initialPassword,newPassword:changedPassword,confirmPassword:changedPassword}})).status,200)
 
+  const mixedWrites = await Promise.all([
+    ...Array.from({length:5},(_,index) => call('/admin/periods',{method:'POST',cookie:adminCookie,body:{name:`R2并发周期${index}`,startTime:new Date(Date.now()-60_000).toISOString(),endTime:new Date(Date.now()+86_400_000).toISOString(),status:'active'}})),
+    ...Array.from({length:5},(_,index) => call('/admin/employees',{method:'POST',cookie:adminCookie,body:{name:`R2并发成员${index}`,gender:'unknown',departmentId:'dep_rd',teamId:'team_rd',position:'并发测试',status:'active',avatar:'',tagIds:[]}})),
+    ...Array.from({length:5},(_,index) => call('/admin/settings',{method:'PUT',cookie:adminCookie,body:{systemName:`和光镜鉴并发${index}`,publicSessionMinutes:90,logRetentionDays:120}})),
+    ...Array.from({length:5},() => call('/admin/employees',{cookie:adminCookie})),
+    ...Array.from({length:5},() => call('/admin/periods',{cookie:adminCookie}))
+  ])
+  assert.ok(mixedWrites.every((item) => item.status === 200))
+
+  const updateUser = await call('/admin/users',{method:'POST',cookie:adminCookie,body:{username:'r2_concurrent_user',displayName:'并发用户',password:'r2-concurrent-password',role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active',mustChangePassword:false}})
+  assert.equal(updateUser.status,200)
+  const userUpdates = await Promise.all([1,2,3].map((index) => call(`/admin/users/${updateUser.payload.data.id}`,{method:'PUT',cookie:adminCookie,body:{displayName:`并发用户${index}`,role:'team_leader',teamId:'team_rd',departmentId:'dep_rd',status:'active'}})))
+  assert.ok(userUpdates.every((item) => item.status === 200))
+
   const differentTasks = await createActivity(adminCookie,'R2并发不同任务',['emp_001','emp_002'],['emp_003','emp_004'])
+  const activityUpdates = await Promise.all([1,2].map((index) => call(`/admin/evaluation-codes/${differentTasks.activity.id}`,{method:'PUT',cookie:adminCookie,body:{name:`R2活动并发更新${index}`}})))
+  assert.ok(activityUpdates.every((item) => item.status === 200))
+  const verifyGenerations = await Promise.all([1,2,3,4].map(() => call('/admin/verify-codes/generate',{method:'POST',cookie:adminCookie,body:{evaluationCodeId:differentTasks.activity.id,count:1}})))
+  assert.ok(verifyGenerations.every((item) => item.status === 200))
   const tokenA = await entry(differentTasks.activity,differentTasks.verifyCodes[0])
   const tokenB = await entry(differentTasks.activity,differentTasks.verifyCodes[1])
   const taskA = await current(tokenA)
@@ -122,6 +140,14 @@ try {
 
   const afterSubmit = await Promise.all([1,2,3].map(() => current(sameToken)))
   assert.ok(afterSubmit.every((item) => item.status === 404))
+  const { DatabaseSync } = await import('node:sqlite')
+  const database = new DatabaseSync(path.join(dataDir,'lumirror.sqlite'))
+  assert.equal(database.prepare('PRAGMA quick_check').get().quick_check,'ok')
+  assert.equal(database.prepare('PRAGMA foreign_key_check').all().length,0)
+  assert.ok(database.prepare('SELECT COUNT(*) AS value FROM employees WHERE name LIKE \'R2并发成员%\'').get().value >= 5)
+  assert.ok(database.prepare('SELECT COUNT(*) AS value FROM review_periods WHERE name LIKE \'R2并发周期%\'').get().value >= 5)
+  assert.ok(database.prepare("SELECT COUNT(*) AS value FROM audit_logs WHERE action IN ('score.submit','evaluation.create','user.update','settings.update')").get().value > 0)
+  database.close()
   console.log('R2 concurrency gate passed: different tasks, duplicate task, results/trends reads and post-submit current-task')
 } finally {
   await stop()

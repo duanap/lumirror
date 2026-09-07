@@ -164,6 +164,7 @@ const env = {
   MAINTENANCE_REPOSITORY: maintenanceRepository
 }
 
+const requestQueueEnabled = process.env.LUMIRROR_REQUEST_QUEUE !== 'off'
 let requestQueue = Promise.resolve()
 
 async function handleRequest(req, res) {
@@ -210,6 +211,10 @@ async function handleRequest(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  if (!requestQueueEnabled) {
+    void handleRequest(req, res)
+    return
+  }
   const current = requestQueue.then(() => handleRequest(req, res))
   requestQueue = current.catch(() => {})
 })

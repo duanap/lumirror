@@ -38,6 +38,12 @@ jobs:
       - name: Run server smoke tests
         run: npm run test:server
 
+      - name: Run HTTP concurrency gate
+        run: npm run test:r2:http-concurrency
+
+      - name: Run repository concurrency gate
+        run: npm run test:r2:repository-concurrency
+
       - name: Run R2 golden behavior tests
         run: npm run test:golden
 
