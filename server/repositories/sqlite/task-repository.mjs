@@ -204,7 +204,7 @@ export class SqliteTaskRepository {
   deleteVerifyCode(verifyId, session) {
     const row = this.database.prepare('SELECT v.id,v.evaluation_id,v.payload_json,e.status,e.team_id,e.department_id FROM verification_codes v JOIN evaluation_activities e ON e.id=v.evaluation_id WHERE v.id=?').get(verifyId)
     if (!row) throw appError('邀请码不存在或无权删除',404,'NOT_FOUND')
-    if ((session.role !== 'admin' && !(session.role === 'team_leader' && session.teamId === row.team_id)) || row.status === 'archived') throw appError('邀请码不存在或无权删除',404,'NOT_FOUND')
+    if (session.role !== 'admin' && !(session.role === 'team_leader' && session.teamId === row.team_id)) throw appError('邀请码不存在或无权删除',404,'NOT_FOUND')
     if (row.status === 'archived') throw appError('已归档活动为只读状态',409,'EVALUATION_ARCHIVED')
     if (this.database.prepare("SELECT 1 FROM evaluation_tasks WHERE verification_code_id=? AND status='submitted' LIMIT 1").get(verifyId)) throw appError('该邀请码已有提交记录，不能删除',409)
     this.database.exec('BEGIN IMMEDIATE')
