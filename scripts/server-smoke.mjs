@@ -186,6 +186,17 @@ try {
     method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
   })
   assert.equal(memberTag.status, 200)
+  const temporaryTag = await call(running.baseUrl, '/admin/member-tags', {method:'POST',cookie:adminCookie,body:{name:'Direct 临时标签'}})
+  assert.equal(temporaryTag.status,200)
+  const createdEmployeeDirect = await call(running.baseUrl, '/admin/employees', {
+    method:'POST',cookie:adminCookie,
+    body:{name:'Direct SQL 成员',gender:'male',departmentId:'dep_rd',teamId:'team_rd',position:'工程师',status:'active',avatar:'avatar_male_young_plain',tagIds:[temporaryTag.payload.data.id]}
+  })
+  assert.equal(createdEmployeeDirect.status,200)
+  assert.deepEqual(createdEmployeeDirect.payload.data.tagIds,[temporaryTag.payload.data.id])
+  const deletedTemporaryTag = await call(running.baseUrl, `/admin/member-tags/${temporaryTag.payload.data.id}`, {method:'DELETE',cookie:adminCookie})
+  assert.equal(deletedTemporaryTag.status,200)
+  assert.equal(deletedTemporaryTag.payload.data.detachedCount,1)
   const taggedEmployee = await call(running.baseUrl, '/admin/employees/emp_003', {
     method: 'PUT', cookie: adminCookie,
     body: { name:'王敏', gender:'female', departmentId:'dep_rd', teamId:'team_rd', position:'产品经理', status:'active', avatar:'avatar_female_young_plain', tagIds:[memberTag.payload.data.id] }

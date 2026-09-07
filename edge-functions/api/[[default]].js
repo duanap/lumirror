@@ -208,6 +208,10 @@ function getEvaluationRepository(context) {
   const repository = context?.env?.EVALUATION_REPOSITORY
   return repository && typeof repository.list === 'function' ? repository : null
 }
+function getEmployeeRepository(context) {
+  const repository = context?.env?.EMPLOYEE_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2294,6 +2298,41 @@ async function directAdminEvaluations(context, path, method) {
   return null
 }
 
+async function directAdminEmployees(context, path, method) {
+  const repository = getEmployeeRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const url = new URL(context.request.url)
+  if (path === '/admin/employees' && method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok(repository.list(access.session,{q:url.searchParams.get('q'),teamId:url.searchParams.get('teamId'),departmentId:url.searchParams.get('departmentId'),status:url.searchParams.get('status')}))
+  }
+  if (path === '/admin/employees' && method === 'POST') return ok(repository.create(await bodyJson(context.request),access.session))
+  const match = path.match(/^\/admin\/employees\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.update(match[1],await bodyJson(context.request),access.session))
+  if (method === 'DELETE') return ok(repository.delete(match[1],access.session))
+  return null
+}
+
+async function directAdminTags(context, path, method) {
+  const repository = getEmployeeRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (path === '/admin/member-tags' && method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok({items:repository.listTags(access.session),canCreate:access.session.role === 'admin' || access.session.role === 'team_leader',canManage:access.session.role === 'admin'})
+  }
+  if (path === '/admin/member-tags' && method === 'POST') return ok(repository.createTag(await bodyJson(context.request),access.session))
+  const match = path.match(/^\/admin\/member-tags\/([^/]+)$/)
+  if (!match) return null
+  if (method === 'PUT') return ok(repository.updateTag(match[1],await bodyJson(context.request),access.session))
+  if (method === 'DELETE') return ok(repository.deleteTag(match[1],access.session))
+  return null
+}
+
 async function directAdminCreateActivity(context) {
   const repository = getEvaluationRepository(context)
   if (!repository || typeof repository.createActivity !== 'function') return null
@@ -2408,6 +2447,12 @@ export default async function onRequest(context) {
   }
   try {
     ensureSecrets(context)
+    if ((path === '/admin/employees' || path.startsWith('/admin/employees/')) && getEmployeeRepository(context)) {
+      return withCors(await directAdminEmployees(context,path,method), context)
+    }
+    if ((path === '/admin/member-tags' || path.startsWith('/admin/member-tags/')) && getEmployeeRepository(context)) {
+      return withCors(await directAdminTags(context,path,method), context)
+    }
     if ((path === '/admin/evaluation-codes' || path.startsWith('/admin/evaluation-codes/')) && getEvaluationRepository(context)) {
       return withCors(await directAdminEvaluations(context,path,method), context)
     }

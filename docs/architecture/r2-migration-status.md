@@ -26,8 +26,8 @@ Snapshot path and are listed under the later Domain CRUD migration.
 - [x] periods
 - [x] invites
 - [x] tasks admin
-- [ ] employees
-- [ ] member tags
+- [x] employees
+- [x] member tags
 - [ ] departments
 - [ ] teams
 - [ ] users
