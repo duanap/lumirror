@@ -1,5 +1,6 @@
 import { randomBytes, createHash } from 'node:crypto'
 import { SqliteScoreRepository } from './score-repository.mjs'
+import { appendAuditRecord } from './audit-repository.mjs'
 
 const json = (value) => JSON.stringify(value ?? null)
 const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
@@ -83,7 +84,7 @@ export class SqliteEvaluationRepository {
         .run(next.name,next.status,next.startTime,next.endTime,json(next),evaluationId)
       if (previousStatus !== nextStatus && (nextStatus === 'archived' || previousStatus === 'archived')) {
         const action = nextStatus === 'archived' ? 'evaluation.archive' : 'evaluation.unarchive'
-        this.appendAudit(action,{evaluationId,name:next.name},next.updatedAt)
+        this.appendAudit(action,{evaluationId,name:next.name},session,next.updatedAt)
       }
       this.database.prepare('UPDATE app_state SET updated_at = ? WHERE singleton = 1').run(next.updatedAt)
       this.database.exec('COMMIT')
@@ -237,7 +238,7 @@ export class SqliteEvaluationRepository {
       const taskOrderStart = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM evaluation_tasks').get().value)
       const taskInsert = this.database.prepare('INSERT INTO evaluation_tasks (id,evaluation_id,verification_code_id,target_type,target_id,status,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?)')
       taskRecords.forEach((task,index) => taskInsert.run(task.id,evaluation.id,task.verifyCodeId,task.targetType,task.targetId,task.status,json(task),taskOrderStart + index))
-      this.appendAudit('evaluation.create',{evaluationId:evaluation.id,name:evaluation.name},createdAt)
+      this.appendAudit('evaluation.create',{evaluationId:evaluation.id,name:evaluation.name},session,createdAt)
       this.database.prepare('UPDATE app_state SET updated_at = ? WHERE singleton = 1').run(createdAt)
       this.database.exec('COMMIT')
     } catch (cause) {
@@ -274,11 +275,7 @@ export class SqliteEvaluationRepository {
     throw appError('无法生成唯一邀请码',500,'CODE_GENERATION_FAILED')
   }
 
-  appendAudit(action, detail, createdAt) {
-    const id = `audit_${action.replace(/[^a-z0-9]+/gi,'_')}_${Date.now()}_${Math.random().toString(16).slice(2)}`
-    const payload = {id,action,actorId:'',actorName:'',role:'',detail,createdAt}
-    const listOrder = Number(this.database.prepare('SELECT COALESCE(MAX(list_order) + 1, 0) AS value FROM audit_logs').get().value)
-    this.database.prepare('INSERT INTO audit_logs (id, action, actor_id, role, created_at, detail_json, payload_json, list_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id,action,null,null,createdAt,json(detail),json(payload),listOrder)
+  appendAudit(action, detail, actor, createdAt) {
+    appendAuditRecord(this.database,action,detail,actor,createdAt)
   }
 }
