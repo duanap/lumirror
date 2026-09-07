@@ -1,7 +1,7 @@
-// Employee Anonymous Review - API Runtime v1.5.0
+// Employee Anonymous Review - API Runtime v1.5.1
 // Single-file runtime entry for maximum EdgeOne compatibility.
 
-const RUNTIME_VERSION = '1.5.0'
+const RUNTIME_VERSION = '1.5.1'
 const DATABASE_KEY = 'employee_review_db_v1'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
