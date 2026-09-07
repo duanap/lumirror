@@ -13,6 +13,8 @@ import { SqliteOrganizationRepository } from '../server/repositories/sqlite/orga
 import { SqliteUserRepository } from '../server/repositories/sqlite/user-repository.mjs'
 import { SqliteAuditRepository } from '../server/repositories/sqlite/audit-repository.mjs'
 import { SqliteSettingsRepository } from '../server/repositories/sqlite/settings-repository.mjs'
+import { SqliteBatchRepository } from '../server/repositories/sqlite/batch-repository.mjs'
+import { SqliteMaintenanceRepository } from '../server/repositories/sqlite/maintenance-repository.mjs'
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 function requiredEnvironment(name) {
@@ -129,6 +131,8 @@ const organizationRepository = new SqliteOrganizationRepository(storage)
 const userRepository = new SqliteUserRepository(storage)
 const auditRepository = new SqliteAuditRepository(storage)
 const settingsRepository = new SqliteSettingsRepository(storage)
+const batchRepository = new SqliteBatchRepository({storage,employeeRepository,userRepository,organizationRepository,periodRepository,evaluationRepository,taskRepository})
+const maintenanceRepository = new SqliteMaintenanceRepository(storage)
 await chmod(databaseFile, 0o600)
 
 const env = {
@@ -150,7 +154,9 @@ const env = {
   ORGANIZATION_REPOSITORY: organizationRepository,
   USER_REPOSITORY: userRepository,
   AUDIT_REPOSITORY: auditRepository,
-  SETTINGS_REPOSITORY: settingsRepository
+  SETTINGS_REPOSITORY: settingsRepository,
+  BATCH_REPOSITORY: batchRepository,
+  MAINTENANCE_REPOSITORY: maintenanceRepository
 }
 
 let requestQueue = Promise.resolve()
