@@ -28,8 +28,8 @@ Snapshot path and are listed under the later Domain CRUD migration.
 - [x] tasks admin
 - [x] employees
 - [x] member tags
-- [ ] departments
-- [ ] teams
+- [x] departments
+- [x] teams
 - [ ] users
 - [ ] audit
 - [ ] import/export

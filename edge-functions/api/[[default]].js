@@ -212,6 +212,10 @@ function getEmployeeRepository(context) {
   const repository = context?.env?.EMPLOYEE_REPOSITORY
   return repository && typeof repository.list === 'function' ? repository : null
 }
+function getOrganizationRepository(context) {
+  const repository = context?.env?.ORGANIZATION_REPOSITORY
+  return repository && typeof repository.list === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -2333,6 +2337,24 @@ async function directAdminTags(context, path, method) {
   return null
 }
 
+async function directAdminOrganization(context, path, method) {
+  const repository = getOrganizationRepository(context)
+  if (!repository) return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  const match = path.match(/^\/admin\/(departments|teams)(?:\/([^/]+))?$/)
+  if (!match) return null
+  const kind = match[1]
+  if (method === 'GET') {
+    if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+    return ok(repository.list(kind,access.session))
+  }
+  if (method === 'POST') return ok(repository.create(kind,await bodyJson(context.request),access.session))
+  if (match[2] && method === 'PUT') return ok(repository.update(kind,match[2],await bodyJson(context.request),access.session))
+  if (match[2] && method === 'DELETE') return ok(repository.delete(kind,match[2],access.session))
+  return null
+}
+
 async function directAdminCreateActivity(context) {
   const repository = getEvaluationRepository(context)
   if (!repository || typeof repository.createActivity !== 'function') return null
@@ -2452,6 +2474,9 @@ export default async function onRequest(context) {
     }
     if ((path === '/admin/member-tags' || path.startsWith('/admin/member-tags/')) && getEmployeeRepository(context)) {
       return withCors(await directAdminTags(context,path,method), context)
+    }
+    if (path === '/admin/departments' || path.startsWith('/admin/departments/') || path === '/admin/teams' || path.startsWith('/admin/teams/')) {
+      if (getOrganizationRepository(context)) return withCors(await directAdminOrganization(context,path,method), context)
     }
     if ((path === '/admin/evaluation-codes' || path.startsWith('/admin/evaluation-codes/')) && getEvaluationRepository(context)) {
       return withCors(await directAdminEvaluations(context,path,method), context)

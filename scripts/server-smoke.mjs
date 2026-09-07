@@ -182,6 +182,15 @@ try {
   const deletedDirectPeriod = await call(running.baseUrl, `/admin/periods/${directPeriod.payload.data.id}`, {method:'DELETE',cookie:adminCookie})
   assert.equal(deletedDirectPeriod.status,200)
 
+  const directDepartment = await call(running.baseUrl, '/admin/departments', {method:'POST',cookie:adminCookie,body:{name:'Direct SQL 部门',status:'active'}})
+  assert.equal(directDepartment.status,200)
+  const directTeam = await call(running.baseUrl, '/admin/teams', {method:'POST',cookie:adminCookie,body:{name:'Direct SQL 团队',departmentId:directDepartment.payload.data.id,status:'active',sort:99}})
+  assert.equal(directTeam.status,200)
+  const directTeams = await call(running.baseUrl, '/admin/teams', {cookie:adminCookie})
+  assert.ok(directTeams.payload.data.items.some((item) => item.id === directTeam.payload.data.id))
+  assert.equal((await call(running.baseUrl, `/admin/teams/${directTeam.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
+  assert.equal((await call(running.baseUrl, `/admin/departments/${directDepartment.payload.data.id}`, {method:'DELETE',cookie:adminCookie})).status,200)
+
   const memberTag = await call(running.baseUrl, '/admin/member-tags', {
     method: 'POST', cookie: adminCookie, body: { name:'服务器标签' }
   })
