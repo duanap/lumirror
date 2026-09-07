@@ -1,4 +1,6 @@
 import { randomBytes, pbkdf2Sync, createHash } from 'node:crypto'
+import { appendAuditRecord } from './audit-repository.mjs'
+import { currentAuditActor } from '../../request-context.mjs'
 
 const json = (value) => JSON.stringify(value ?? null)
 const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
@@ -100,6 +102,7 @@ export class SqliteUserRepository {
     try {
       const order = Number(this.database.prepare('SELECT COALESCE(MAX(list_order)+1,0) AS value FROM users').get().value)
       this.updateInsert(user,order)
+      appendAuditRecord(this.database,'user.create',{targetUserId:user.id,role:user.role},currentAuditActor(),createdAt)
       this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(createdAt)
       this.database.exec('COMMIT'); return this.view(this.rowById(user.id))
     } catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
@@ -128,7 +131,13 @@ export class SqliteUserRepository {
     const activeAdmins = this.database.prepare("SELECT COUNT(*) AS value FROM users WHERE role='admin' AND status='active' AND id != ?").get(userId).value + (next.role === 'admin' && next.status === 'active' ? 1 : 0)
     if (Number(activeAdmins) < 1) throw appError('系统必须保留至少一个启用管理员',409)
     this.database.exec('BEGIN IMMEDIATE')
-    try { this.updateRow(next); this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt); this.database.exec('COMMIT'); return this.view(this.rowById(userId)) }
+    try {
+      this.updateRow(next)
+      appendAuditRecord(this.database,'user.update',{targetUserId:userId},currentAuditActor(),next.updatedAt)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt)
+      this.database.exec('COMMIT')
+      return this.view(this.rowById(userId))
+    }
     catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
   }
 
@@ -141,18 +150,31 @@ export class SqliteUserRepository {
     if (String(newPassword) === String(currentPassword)) throw appError('新密码不能与当前密码相同')
     const next = {...user,...this.passwordFields(newPassword,false),updatedAt:new Date().toISOString()}
     this.database.exec('BEGIN IMMEDIATE')
-    try { this.updateRow(next); this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt); this.database.exec('COMMIT'); return {changed:true} }
+    try {
+      this.updateRow(next)
+      appendAuditRecord(this.database,'password.change',{userId},currentAuditActor(),next.updatedAt)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt)
+      this.database.exec('COMMIT')
+      return {changed:true}
+    }
     catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
   }
 
-  delete(userId, currentUserId) {
+  delete(userId, currentUserId, options = {}) {
     const row = this.rowById(userId)
     if (!row) throw appError('账号不存在',404,'NOT_FOUND')
     if (userId === currentUserId) throw appError('不能删除当前登录账号',409)
     if (Number(this.database.prepare('SELECT COUNT(*) AS value FROM users').get().value) <= 1) throw appError('至少保留一个后台账号',409)
     if (row.role === 'admin' && row.status === 'active' && Number(this.database.prepare("SELECT COUNT(*) AS value FROM users WHERE role='admin' AND status='active' AND id != ?").get(userId).value) < 1) throw appError('不能删除最后一个启用管理员',409)
+    const updatedAt = new Date().toISOString()
     this.database.exec('BEGIN IMMEDIATE')
-    try { this.database.prepare('DELETE FROM users WHERE id=?').run(userId); this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(new Date().toISOString()); this.database.exec('COMMIT'); return {deleted:true} }
+    try {
+      this.database.prepare('DELETE FROM users WHERE id=?').run(userId)
+      if (options.audit !== false) appendAuditRecord(this.database,'user.delete',{targetUserId:userId},currentAuditActor(),updatedAt)
+      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(updatedAt)
+      this.database.exec('COMMIT')
+      return {deleted:true}
+    }
     catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
   }
 }
