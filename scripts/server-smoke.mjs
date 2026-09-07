@@ -82,7 +82,8 @@ async function call(baseUrl, route, { method = 'GET', token, cookie, body } = {}
   return {
     status: response.status,
     payload: await response.json(),
-    cookie: setCookie?.split(';')[0] || cookie || ''
+    cookie: setCookie?.split(';')[0] || cookie || '',
+    requestId: response.headers.get('x-request-id')
   }
 }
 
@@ -138,7 +139,14 @@ try {
   running = await startServer({ includeBootstrapPassword: true })
   const health = await call(running.baseUrl, '/health')
   assert.equal(health.status, 200)
+  const busyStorage = new RelationalSqliteStorage(path.join(dataDir, 'lumirror.sqlite'))
+  assert.equal(busyStorage.database.prepare('PRAGMA busy_timeout').get().timeout,5000)
+  busyStorage.close()
   assert.equal(health.payload.data.ready, true)
+  assert.match(health.requestId,/^[0-9a-f-]{36}$/)
+  assert.equal(health.payload.data.storageReady,true)
+  assert.equal(health.payload.data.storageType,'sqlite-relational')
+  assert.equal(health.payload.data.schemaVersion,4)
   assert.equal(health.payload.data.kvBound, true)
   assert.equal(health.payload.data.environment.storageModel, 'sqlite-relational')
 
@@ -196,6 +204,12 @@ try {
   })
   assert.equal(entry.status, 200)
 
+  const currentTask = await call(running.baseUrl, '/public/current-task', { token: entry.payload.token })
+  assert.equal(currentTask.status, 200)
+  assert.equal(currentTask.payload.data.targetType, 'employee')
+  assert.equal(currentTask.payload.data.remaining, 2)
+  assert.equal(currentTask.payload.data.rules.length, 3)
+
   const tasks = await call(running.baseUrl, `/admin/tasks?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(tasks.status, 200)
   const taskIds = tasks.payload.data.items
@@ -209,9 +223,17 @@ try {
     body: { taskId, scores: { ability: 90, attitude: 90, collaboration: 90 } }
   })))
   assert.ok(submissions.every((submission) => submission.status === 200))
+  const duplicateSubmission = await call(running.baseUrl, '/public/submit-score', {
+    method: 'POST', token: entry.payload.token,
+    body: { taskId: taskIds[0], scores: { ability: 90, attitude: 90, collaboration: 90 } }
+  })
+  assert.equal(duplicateSubmission.status, 409)
+  assert.equal(duplicateSubmission.payload.code, 'TASK_ALREADY_SUBMITTED')
 
   const results = await call(running.baseUrl, `/admin/results?evaluationCodeId=${activity.id}`, { cookie: adminCookie })
   assert.equal(results.status, 200)
+  assert.equal(results.payload.data.activity.rules.length, 3)
+  assert.deepEqual(results.payload.data.activity.participantEmployeeIds, ['emp_001'])
   assert.equal(results.payload.data.items.reduce((total, item) => total + Number(item.reviewCount || 0), 0), 2)
   const endedActivity = await call(running.baseUrl, `/admin/evaluation-codes/${activity.id}`, {
     method:'PUT',cookie:adminCookie,body:{endTime:new Date(Date.now()-1_000).toISOString()}
@@ -271,6 +293,7 @@ try {
   assert.equal(database.prepare('SELECT schema_version FROM app_state WHERE singleton = 1').get().schema_version, 4)
   assert.ok(!tables.includes('kv_store'), 'business data must not be stored as one KV JSON document')
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM scores').get().count, 2)
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE action = 'score.submit'").get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_targets WHERE target_type = 'team'").get().count, 2)
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM evaluation_tasks WHERE target_type = 'team'").get().count, 2)
   assert.equal(database.prepare('SELECT COUNT(*) AS count FROM member_tags').get().count, 1)

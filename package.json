@@ -11,6 +11,9 @@
     "start": "node scripts/production-server.mjs",
     "test:api": "node scripts/api-smoke.mjs",
     "test:server": "node scripts/server-smoke.mjs",
+    "test:golden": "node scripts/r2-golden.mjs",
+    "test:r2:current-task": "node scripts/current-task-repository-smoke.mjs",
+    "test:r2:concurrency": "node scripts/r2-concurrency.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",
     "check:functions": "node --check \"edge-functions/api/[[default]].js\""
   },

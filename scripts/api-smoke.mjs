@@ -12,12 +12,13 @@ async function call(path,{method='GET',token,cookie,body}={}) {
   const request = new Request(`http://localhost/api${path}`,{method,headers,body:body?JSON.stringify(body):undefined})
   const response = await onRequest({request,params:{},env})
   const setCookie = response.headers.get('set-cookie')
-  return {status:response.status,payload:await response.json(),cookie:setCookie?.split(';')[0] || cookie || ''}
+  return {status:response.status,payload:await response.json(),cookie:setCookie?.split(';')[0] || cookie || '',requestId:response.headers.get('x-request-id')}
 }
 
 const health = await call('/health')
 assert.equal(health.payload.data.version,'1.5.1')
 assert.equal(health.payload.data.ready,true)
+assert.match(health.requestId,/^[0-9a-f-]{36}$/)
 
 const productionHealth = await onRequest({
   request:new Request('https://example.com/api/health'),

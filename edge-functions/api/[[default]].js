@@ -7,6 +7,8 @@ const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 let memoryDatabase = null
 const rateBuckets = new Map()
+const requestIds = new WeakMap()
+const runtimeStartedAt = Date.now()
 const MAX_BODY_BYTES = 2 * 1024 * 1024
 const PASSWORD_ALGORITHM = 'pbkdf2-sha256'
 const PASSWORD_ITERATIONS = 210000
@@ -171,6 +173,14 @@ function getEnv(context, name, fallback = '') {
   const value = context?.env?.[name]
   return value === undefined || value === null || value === '' ? fallback : String(value)
 }
+function requestId(context) {
+  if (!context || typeof context !== 'object') return randomId('req')
+  if (!requestIds.has(context)) {
+    const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : randomId('req')
+    requestIds.set(context,id)
+  }
+  return requestIds.get(context)
+}
 function isKvBinding(value) {
   return Boolean(value && typeof value === 'object' && typeof value.get === 'function' && typeof value.put === 'function')
 }
@@ -182,6 +192,14 @@ function getKvBinding(context) {
   return isKvBinding(contextual) ? contextual : null
 }
 function hasPersistentKV(context) { return isKvBinding(getKvBinding(context)) }
+function getScoreRepository(context) {
+  const repository = context?.env?.SCORE_REPOSITORY
+  return repository && typeof repository.submitAtomic === 'function' ? repository : null
+}
+function getTaskRepository(context) {
+  const repository = context?.env?.TASK_REPOSITORY
+  return repository && typeof repository.findCurrentTask === 'function' ? repository : null
+}
 
 async function createSeedDatabase(context) {
   const now = nowText()
@@ -455,6 +473,7 @@ const JSON_HEADERS = {
   'cross-origin-resource-policy':'same-origin',
   'access-control-allow-methods':'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'access-control-allow-headers':'content-type,authorization,x-lumirror-request',
+  'access-control-expose-headers':'x-request-id',
   'access-control-max-age':'600'
 }
 function json(data,status=200,extraHeaders = {}) {
@@ -500,6 +519,7 @@ function corsOrigin(context) {
 }
 function withCors(response, context) {
   const headers = new Headers(response.headers)
+  headers.set('x-request-id',requestId(context))
   const origin = corsOrigin(context)
   if (origin) {
     headers.set('access-control-allow-origin', origin)
@@ -516,6 +536,12 @@ function httpError(message, status = 400, code = 'BAD_REQUEST') {
   error.status = status
   error.code = code
   return error
+}
+function logInternalError(context, error) {
+  console.error(JSON.stringify({
+    timestamp:nowText(),requestId:requestId(context),level:'error',errorType:error?.name || 'Error',
+    errorMessage:String(error?.message || 'Unknown server error').slice(0,240)
+  }))
 }
 const bodyJson = async (request) => {
   const length = Number(request.headers.get('content-length') || 0)
@@ -1272,7 +1298,7 @@ async function publicRoutes(context,path,method,db) {
     const input = await bodyJson(context.request)
     const task = db.tasks.find((x) => x.id === input.taskId && x.verifyCodeId === verify.id && x.evaluationCodeId === evaluation.id)
     if (!task) return fail('评价任务不存在',404)
-    if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409)
+    if (task.status === 'submitted' || db.scores.some((x) => x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409,'TASK_ALREADY_SUBMITTED')
     const values = input.scores || {}
     for (const rule of evaluation.rules.filter((x) => x.enabled)) {
       const value = Number(values[rule.id])
@@ -1281,12 +1307,13 @@ async function publicRoutes(context,path,method,db) {
     const total = computeTotal(values,evaluation.rules,evaluation.rounding)
     if (total === null) return fail('评分数据无效')
     const scoreId = `score_${await sha256(`${verify.id}:${task.id}`)}`
-    if (db.scores.some((x) => x.id === scoreId || x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409)
+    if (db.scores.some((x) => x.id === scoreId || x.taskId === task.id)) return fail('该评价对象已评价，不能重复提交',409,'TASK_ALREADY_SUBMITTED')
     const anonymousToken = await sha256(`${verify.evaluatorHash}:${task.id}`)
-    db.scores.push({
+    const score = {
       id:scoreId, evaluationCodeId:evaluation.id, taskId:task.id,
       ...targetReference(itemTargetType(task,evaluation),itemTargetId(task,evaluation)),anonymousToken, values:copyJson(values), total, createdAt:nowText()
-    })
+    }
+    db.scores.push(score)
     task.status = 'submitted'
     task.submittedAt = nowText()
     syncVerifyProgress(db,verify)
@@ -1294,7 +1321,17 @@ async function publicRoutes(context,path,method,db) {
       timedInvite.status = 'completed'
       timedInvite.completedAt = nowText()
     }
-    await saveDatabase(context,db)
+    const scoreRepository = getScoreRepository(context)
+    if (scoreRepository) {
+      try {
+        scoreRepository.submitAtomic({evaluationId:evaluation.id,verifyId:verify.id,taskId:task.id,score,task,verify,timedInvite})
+      } catch (error) {
+        if (error?.code === 'TASK_ALREADY_SUBMITTED') return fail('该评价对象已评价，不能重复提交',409,error.code)
+        throw error
+      }
+    } else {
+      await saveDatabase(context,db)
+    }
     return ok({remaining:verify.remaining,completed:verify.remaining===0,total,timed:Boolean(timedInvite),expiresAt:timedInvite?.expiresAt || null})
   }
   if (path === '/public/logout' && method === 'POST') return ok({loggedOut:true})
@@ -2086,6 +2123,155 @@ async function adminRoutes(context,path,method,db) {
   return fail('接口不存在',404)
 }
 
+async function directCurrentTask(context) {
+  const session = await requirePublic(context)
+  if (!session) return fail('评价会话已失效，请重新进入',401)
+  const repository = getTaskRepository(context)
+  if (!repository) return null
+  const result = repository.findCurrentTask({
+    evaluationId:session.evaluationCodeId, verifyId:session.verifyCodeId, timedInviteId:session.timedInviteId || ''
+  })
+  if (!result) return fail('评价活动不存在',404)
+  const state = activityStatus(result.evaluation)
+  if (state !== 'active') return fail(state === 'upcoming' ? '该评价活动尚未开始' : state === 'ended' ? '该评价活动已结束' : '该评价活动已停用',403)
+  if (result.timedInvite && ['completed','expired'].includes(result.timedInvite.status)) return fail('评价不存在或已结束',403,'EXPIRED')
+  if (result.timedInvite?.expiresAt && new Date(result.timedInvite.expiresAt).getTime() <= Date.now()) return fail('评价不存在或已结束',403,'EXPIRED')
+  if (!result.task) return fail(result.remaining === 0 ? '该邀请码已完成全部评价' : '没有待评价任务',404)
+  return ok({
+    id:result.task.id, target:result.task.target, targetType:result.task.targetType,
+    evaluation:{id:result.evaluation.id,name:result.evaluation.name,teamName:result.evaluation.teamName},
+    rules:result.rules, rounding:result.evaluation.rounding || 'one_decimal', remaining:result.remaining,
+    timed:Boolean(result.timedInvite), expiresAt:result.timedInvite?.expiresAt || null
+  })
+}
+
+async function directRemaining(context) {
+  const session = await requirePublic(context)
+  if (!session) return fail('评价会话已失效，请重新进入',401)
+  const repository = getTaskRepository(context)
+  if (!repository) return null
+  const result = repository.findProgress({
+    evaluationId:session.evaluationCodeId, verifyId:session.verifyCodeId, timedInviteId:session.timedInviteId || ''
+  })
+  if (!result) return fail('评价活动不存在',404)
+  if (result.timedInvite && ['completed','expired'].includes(result.timedInvite.status)) return fail('评价不存在或已结束',403,'EXPIRED')
+  if (result.timedInvite?.expiresAt && new Date(result.timedInvite.expiresAt).getTime() <= Date.now()) return fail('评价不存在或已结束',403,'EXPIRED')
+  return ok({remaining:result.remaining,completed:result.remaining === 0,timed:Boolean(result.timedInvite),expiresAt:result.timedInvite?.expiresAt || null})
+}
+
+async function directTimedEntry(context) {
+  const repository = getTaskRepository(context)
+  if (!repository) return null
+  const input = await bodyJson(context.request)
+  const linkCode = normalize(input.linkCode)
+  const result = repository.openTimedInvite({
+    linkCode, lifetimeSeconds:timedInviteLifetimeSeconds(context)
+  })
+  if (result.kind === 'not-found') return fail('评价不存在或已结束',404,'NOT_FOUND')
+  if (result.kind === 'ended') return fail('评价不存在或已结束',403,'ENDED')
+  if (result.kind === 'completed') return fail('评价不存在或已结束',403,'COMPLETED')
+  if (result.kind === 'expired') return fail('评价不存在或已结束',403,'EXPIRED')
+  const token = await signToken({
+    role:'evaluator', evaluationCodeId:result.evaluation.id, verifyCodeId:result.verifyId,
+    evaluatorHash:result.evaluatorHash, timedInviteId:result.inviteId
+  }, evaluatorSecret(context), result.expiresIn)
+  return json({
+    success:true, token, timed:true, expiresAt:result.expiresAt,
+    evaluation:{id:result.evaluation.id,name:result.evaluation.name,teamName:result.evaluation.teamName},
+    remaining:result.remaining
+  })
+}
+
+async function directAdminSession(context, repository) {
+  const tokenSession = await requireAdmin(context)
+  if (!tokenSession) return { response:fail('后台登录已失效',401) }
+  const user = repository.findUser(tokenSession.userId)
+  if (!user || user.status !== 'active') return { response:fail('账号已停用或不存在',401) }
+  if (user.mustChangePassword) return { response:fail('请先修改默认或初始密码',403,'PASSWORD_CHANGE_REQUIRED') }
+  return { session:{...tokenSession,role:user.role,teamId:user.teamId || '',departmentId:user.departmentId || '',employeeId:user.employeeId || ''}, user }
+}
+
+async function directAdminResults(context) {
+  const repository = getScoreRepository(context)
+  if (!repository || typeof repository.listResults !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('成员账号不能查看评分结果',403)
+  const url = new URL(context.request.url)
+  const result = repository.listResults(access.session,url.searchParams.get('evaluationCodeId') || '')
+  return ok({
+    ...result,
+    activity:result.activity ? {...result.activity,status:activityStatus(result.activity),lifecycleStatus:result.activity.status} : result.activity
+  })
+}
+
+async function directAdminTrendOptions(context) {
+  const repository = getScoreRepository(context)
+  if (!repository || typeof repository.listTrendOptions !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+  return ok(repository.listTrendOptions(access.session))
+}
+
+async function directAdminTrends(context) {
+  const repository = getScoreRepository(context)
+  if (!repository || typeof repository.listTrends !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('成员账号不能查看评分趋势',403)
+  const url = new URL(context.request.url)
+  const targetType = url.searchParams.get('targetType') === 'team' ? 'team' : 'employee'
+  const targetId = normalize(url.searchParams.get('targetId'))
+  if (!targetId) return ok({targetType,target:null,points:[]})
+  const startTime = normalize(url.searchParams.get('startTime'))
+  const endTime = normalize(url.searchParams.get('endTime'))
+  const start = startTime ? parseTime(startTime) : null
+  const end = endTime ? parseTime(endTime) : null
+  if ((startTime && !Number.isFinite(start)) || (endTime && !Number.isFinite(end)) || (start !== null && end !== null && start > end)) return fail('趋势时间范围无效')
+  const result = repository.listTrends(access.session,{targetType,targetId,startTime,endTime})
+  if (!result) return fail('评价对象不存在或无权查看',403)
+  return ok({
+    targetType,
+    target:{...result.target,targetType},
+    points:result.points.map((point) => ({
+      activityId:point.activityId,activityName:point.activityName,periodId:point.periodId,periodName:point.periodName,
+      evaluationTime:point.evaluationTime,reviewCount:point.reviewCount,total:point.total,
+      status:activityStatus({status:point.status,startTime:point.startTime,endTime:point.endTime}),archived:point.archived
+    }))
+  })
+}
+
+async function directAdminTasks(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.listAdminTasks !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  const url = new URL(context.request.url)
+  return ok(repository.listAdminTasks(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
+async function directAdminVerifyCodes(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.listVerifyCodes !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  const url = new URL(context.request.url)
+  return ok(repository.listVerifyCodes(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
+async function directAdminTimedInvites(context) {
+  const repository = getTaskRepository(context)
+  if (!repository || typeof repository.listTimedInvites !== 'function') return null
+  const access = await directAdminSession(context,repository)
+  if (access.response) return access.response
+  if (access.session.role === 'member') return fail('当前账号没有此操作权限',403,'FORBIDDEN')
+  const url = new URL(context.request.url)
+  return ok(repository.listTimedInvites(access.session,normalize(url.searchParams.get('evaluationCodeId'))))
+}
+
 export default async function onRequest(context) {
   if (context.request.method === 'OPTIONS') return withCors(new Response(null,{status:204,headers:JSON_HEADERS}), context)
   const url = new URL(context.request.url)
@@ -2119,12 +2305,42 @@ export default async function onRequest(context) {
     const bootstrapReady = databasePresent || environment.initialAdminPasswordConfigured
     const storageReady = production ? Boolean(kv && kvReadable) : true
     const ready = Boolean(storageReady && environment.adminSecretConfigured && environment.publicSecretConfigured && (!production || bootstrapReady))
+    const schemaVersion = typeof kv?.getSchemaVersion === 'function' ? kv.getSchemaVersion() : null
     return withCors(json({success:ready,data:{
-      status:ready?'ok':'degraded',version:RUNTIME_VERSION,ready,kvBound:Boolean(kv),kvReadable,databasePresent,bootstrapReady,environment
+      status:ready?'ok':'degraded',version:RUNTIME_VERSION,ready,uptime:Math.floor((Date.now() - runtimeStartedAt) / 1000),
+      storageReady,storageType:environment.storageModel,schemaVersion,
+      kvBound:Boolean(kv),kvReadable,databasePresent,bootstrapReady,environment
     },...(ready?{}:{message:'部署尚未就绪，请检查 KV 绑定和 Functions 环境变量'})},ready?200:503), context)
   }
   try {
     ensureSecrets(context)
+    if (path === '/public/timed-entry' && method === 'POST' && getTaskRepository(context)) {
+      return withCors(await directTimedEntry(context), context)
+    }
+    if (path === '/public/current-task' && method === 'GET' && getTaskRepository(context)) {
+      return withCors(await directCurrentTask(context), context)
+    }
+    if (path === '/public/remaining' && method === 'GET' && getTaskRepository(context)) {
+      return withCors(await directRemaining(context), context)
+    }
+    if (path === '/admin/results' && method === 'GET' && getScoreRepository(context)?.listResults) {
+      return withCors(await directAdminResults(context), context)
+    }
+    if (path === '/admin/trends/options' && method === 'GET' && getScoreRepository(context)?.listTrendOptions) {
+      return withCors(await directAdminTrendOptions(context), context)
+    }
+    if (path === '/admin/trends' && method === 'GET' && getScoreRepository(context)?.listTrends) {
+      return withCors(await directAdminTrends(context), context)
+    }
+    if (path === '/admin/tasks' && method === 'GET' && getTaskRepository(context)?.listAdminTasks) {
+      return withCors(await directAdminTasks(context), context)
+    }
+    if (path === '/admin/verify-codes' && method === 'GET' && getTaskRepository(context)?.listVerifyCodes) {
+      return withCors(await directAdminVerifyCodes(context), context)
+    }
+    if (path === '/admin/timed-invites' && method === 'GET' && getTaskRepository(context)?.listTimedInvites) {
+      return withCors(await directAdminTimedInvites(context), context)
+    }
     const db = await loadDatabase(context)
     expireTimedInvites(db)
     if (path.startsWith('/public/')) return withCors(await publicRoutes(context,path,method,db), context)
@@ -2132,8 +2348,8 @@ export default async function onRequest(context) {
     return withCors(fail('接口不存在',404), context)
   } catch (error) {
     if (Number(error?.status)) return withCors(fail(error.message || '请求失败',error.status,error.code), context)
-    console.error('[employee-review]',error)
+    logInternalError(context,error)
     const production = getEnv(context,'APP_ENV','development') === 'production'
-    return withCors(fail(production ? '服务器内部错误，请检查 Functions 日志和 KV 绑定' : String(error?.stack || error),500), context)
+    return withCors(fail(production ? '服务器内部错误，请检查 Functions 日志和 KV 绑定' : String(error?.stack || error),500,'INTERNAL_ERROR'), context)
   }
 }

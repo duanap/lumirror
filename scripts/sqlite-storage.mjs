@@ -57,7 +57,7 @@ function rowsByParent(rows, parentKey, valueKey = null) {
 export class RelationalSqliteStorage {
   constructor(databaseFile) {
     this.database = new DatabaseSync(databaseFile)
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
+    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;')
     const legacyKv = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kv_store'").get()
     const relationalState = this.database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_state'").get()
     if (legacyKv && !relationalState) {
@@ -65,6 +65,14 @@ export class RelationalSqliteStorage {
       throw new Error('Legacy KV SQLite database detected; automatic data migration is disabled')
     }
     this.createSchema()
+  }
+
+  getSchemaVersion() {
+    return Number(this.database.prepare('PRAGMA user_version').get().user_version || 0)
+  }
+
+  get snapshotReadCount() {
+    return this._snapshotReadCount || 0
   }
 
   createSchema() {
@@ -260,6 +268,7 @@ export class RelationalSqliteStorage {
 
   async get(key, options = {}) {
     if (key !== DATABASE_KEY) return null
+    this._snapshotReadCount = (this._snapshotReadCount || 0) + 1
     const state = this.database.prepare('SELECT * FROM app_state WHERE singleton = 1').get()
     if (!state) return null
     if (Number(state.schema_version) !== SCHEMA_VERSION) throw new Error(`Unsupported relational schema version: ${state.schema_version}`)
