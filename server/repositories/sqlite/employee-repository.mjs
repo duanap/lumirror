@@ -30,6 +30,10 @@ export class SqliteEmployeeRepository {
     return new Set(employee?.team_id ? [employee.team_id] : [])
   }
 
+  requireWrite(session) {
+    if (session.role !== 'admin' && session.role !== 'team_leader') throw appError('当前账号没有此操作权限',403,'FORBIDDEN')
+  }
+
   tagsFor(employeeId) {
     const ids = this.database.prepare('SELECT tag_id FROM employee_tags WHERE employee_id = ? ORDER BY list_order').all(employeeId).map((row) => row.tag_id)
     const tags = ids.length ? this.database.prepare(`SELECT id,name,payload_json FROM member_tags WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids) : []
@@ -68,6 +72,7 @@ export class SqliteEmployeeRepository {
   }
 
   create(input, session) {
+    this.requireWrite(session)
     const team = this.database.prepare('SELECT id,department_id,status FROM teams WHERE id=?').get(input.teamId)
     if (!team || team.status === 'inactive' || !this.visibleTeamIds(session).has(team.id)) throw appError('所属团队无效')
     if (team.department_id !== input.departmentId) throw appError('所属部门与团队不一致')
@@ -100,6 +105,7 @@ export class SqliteEmployeeRepository {
   }
 
   update(employeeId, input, session) {
+    this.requireWrite(session)
     const row = this.database.prepare('SELECT e.id,e.department_id,e.team_id,e.name,e.status,e.payload_json FROM employees e WHERE e.id=?').get(employeeId)
     if (!row || !this.visibleTeamIds(session).has(row.team_id)) throw appError('员工不存在或无权编辑',404,'NOT_FOUND')
     const team = this.database.prepare('SELECT id,department_id,status FROM teams WHERE id=?').get(input.teamId || row.team_id)
@@ -123,6 +129,7 @@ export class SqliteEmployeeRepository {
   }
 
   delete(employeeId, session) {
+    this.requireWrite(session)
     const row = this.database.prepare('SELECT id,team_id FROM employees WHERE id=?').get(employeeId)
     if (!row || !this.visibleTeamIds(session).has(row.team_id)) throw appError('员工不存在或无权删除',404,'NOT_FOUND')
     if (this.database.prepare("SELECT 1 FROM scores WHERE target_type='employee' AND target_id=? LIMIT 1").get(employeeId)) throw appError('该员工已有历史评分，不能删除，请改为停用',409)
