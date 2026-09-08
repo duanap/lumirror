@@ -7,37 +7,37 @@ import { api, unwrap } from '../../lib/api'
 const file = ref<File>()
 const logs = ref<any[]>([])
 const cleaning = ref(false)
+const importing = ref(false)
 
 function choose(event: Event) {
   file.value = (event.target as HTMLInputElement).files?.[0]
 }
-
-async function download() {
-  const data = unwrap(await api.get('/admin/export/json'))
+function saveJson(data:unknown, filename:string) {
   const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'})
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `Lumirror-backup-${new Date().toISOString().slice(0,10)}.json`
+  link.download = filename
   link.click()
   URL.revokeObjectURL(url)
+}
+async function download() {
+  try {
+    const data = unwrap(await api.get('/admin/export/json'))
+    saveJson(data,`Lumirror-statistics-${new Date().toISOString().slice(0,10)}.json`)
+    ElMessage.success('匿名统计报告已导出；该文件不可用于恢复系统')
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '导出失败') }
 }
 
 async function downloadFull() {
   try {
     await ElMessageBox.confirm(
-      '完整备份包含可用邀请码、密码哈希和评分关联数据，只能用于迁移或灾备。请妥善保存，不能通过聊天或公开网盘分发。',
+      '完整备份包含可用邀请码、密码哈希、任务与评分关联，只能用于迁移或灾备。请使用受控存储，不要通过聊天、邮件或公开网盘分发。',
       '导出完整敏感备份',
       { type:'warning', confirmButtonText:'确认导出', cancelButtonText:'取消' }
     )
     const data = unwrap(await api.post('/admin/export/full-json',{confirm:'EXPORT_FULL_BACKUP'}))
-    const blob = new Blob([JSON.stringify(data,null,2)],{type:'application/json'})
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `Lumirror-full-backup-${new Date().toISOString().slice(0,10)}.json`
-    link.click()
-    URL.revokeObjectURL(url)
+    saveJson(data,`Lumirror-full-backup-${new Date().toISOString().slice(0,10)}.json`)
     await loadLogs()
   } catch (error) {
     if (error === 'cancel') return
@@ -46,21 +46,25 @@ async function downloadFull() {
 }
 
 async function upload() {
-  if (!file.value) return ElMessage.warning('请选择 JSON 文件')
+  if (!file.value) return ElMessage.warning('请选择完整备份 JSON 文件')
+  importing.value = true
   try {
-    await ElMessageBox.confirm(
-      '导入会覆盖当前成员、组织、评价活动、任务和评分数据，后台账号会保留。请确认文件来源可信。',
-      '确认导入数据',
-      { type:'warning', confirmButtonText:'确认导入', cancelButtonText:'取消' }
-    )
     const data = JSON.parse(await file.value.text())
-    await api.post('/admin/import/json',{data})
-    ElMessage.success('导入成功')
+    const preview = unwrap<any>(await api.post('/admin/import/preflight',{data}))
+    const counts = preview.counts || {}
+    await ElMessageBox.confirm(
+      `预检通过：成员 ${counts.employees || 0}，活动 ${counts.evaluationCodes || 0}，任务 ${counts.tasks || 0}，评分 ${counts.scores || 0}。导入将原子替换当前业务数据，同时保留后台账号并使旧会话失效。`,
+      '确认恢复完整备份',
+      { type:'warning', confirmButtonText:'确认覆盖并恢复', cancelButtonText:'取消' }
+    )
+    await api.post('/admin/import/json',{data,confirm:'IMPORT_REPLACE_DATA',previewHash:preview.previewHash,revision:preview.revision})
+    file.value = undefined
+    ElMessage.success('恢复成功，当前浏览器会话已刷新')
     await loadLogs()
   } catch (error) {
     if (error === 'cancel') return
-    ElMessage.error(error instanceof Error ? error.message : '导入失败，请检查 JSON 文件')
-  }
+    ElMessage.error(error instanceof SyntaxError ? 'JSON 文件格式无效' : error instanceof Error ? error.message : '恢复失败')
+  } finally { importing.value = false }
 }
 async function cleanup() {
   cleaning.value = true
@@ -82,19 +86,19 @@ onMounted(loadLogs)
 </script>
 
 <template>
-  <AdminPage title="导入与导出" description="备份或迁移系统中的 JSON 结构化数据。">
+  <AdminPage title="导入与导出" description="匿名统计分享与完整灾备使用两条独立的数据通道。">
     <div class="io-grid">
       <section class="panel io-card">
-        <h3>导出系统数据</h3>
-        <p>导出成员、组织、评价活动、任务、评分与系统设置。为安全起见，密码哈希和邀请码会脱敏。</p>
-        <el-button type="primary" @click="download">导出脱敏 JSON</el-button>
-        <el-button type="danger" plain @click="downloadFull">导出完整备份</el-button>
+        <h3>导出匿名统计报告</h3>
+        <p>仅导出已结束活动、满足最小样本量的匿名聚合结果，不包含任务、邀请码、评价人关联或审计日志。该文件不能用于系统恢复。</p>
+        <el-button type="primary" @click="download">导出匿名统计 JSON</el-button>
+        <el-button type="danger" plain @click="downloadFull">导出完整敏感备份</el-button>
       </section>
       <section class="panel io-card">
-        <h3>导入系统数据</h3>
-        <p>导入会覆盖当前业务数据。请先下载备份，并确认文件来源可信。</p>
+        <h3>恢复完整备份</h3>
+        <p>只接受可恢复的完整备份。系统先进行非破坏性预检，再要求二次确认；匿名统计报告不能导入。</p>
         <input type="file" accept="application/json,.json" @change="choose"/>
-        <el-button type="warning" @click="upload">校验并导入</el-button>
+        <el-button type="warning" :loading="importing" @click="upload">预检并恢复</el-button>
       </section>
       <section class="panel io-card">
         <h3>维护清理</h3>
@@ -116,5 +120,5 @@ onMounted(loadLogs)
 </template>
 
 <style scoped>
-.io-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}.io-card{padding:28px}.io-card h3{margin:0 0 10px}.io-card p{min-height:48px;color:var(--muted);line-height:1.7}.io-card input{display:block;margin:18px 0}.io-card .el-button+.el-button{margin-left:10px}.card-head{display:flex;align-items:center;justify-content:space-between}.log-list{display:grid;gap:8px;max-height:250px;overflow:auto}.log-item{display:grid;gap:4px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}.log-item b{color:var(--ink);font-size:13px}.log-item span{color:var(--muted);font-size:12px}@media(max-width:700px){.io-grid{grid-template-columns:1fr}.io-card .el-button+.el-button{margin:10px 0 0}}
+.io-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:24px}.io-card{padding:28px}.io-card h3{margin:0 0 10px}.io-card p{min-height:70px;color:var(--muted);line-height:1.7}.io-card input{display:block;margin:18px 0}.io-card .el-button+.el-button{margin-left:10px}.card-head{display:flex;align-items:center;justify-content:space-between}.log-list{display:grid;gap:8px;max-height:250px;overflow:auto}.log-item{display:grid;gap:4px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}.log-item b{color:var(--ink);font-size:13px}.log-item span{color:var(--muted);font-size:12px}@media(max-width:700px){.io-grid{grid-template-columns:1fr}.io-card .el-button+.el-button{margin:10px 0 0}}
 </style>
