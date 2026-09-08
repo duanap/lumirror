@@ -6,7 +6,7 @@ This document describes deployment of the repository state that keeps **Schema V
 
 ## Runtime layout
 
-A recommended immutable-release layout is:
+Use immutable release directories and keep runtime state outside them:
 
 ```text
 /www/wwwroot/duanap/apps/lumirror/
@@ -14,23 +14,23 @@ A recommended immutable-release layout is:
 ├── releases/<git-sha>/
 │   ├── dist/
 │   ├── server/
-│   ├── shared/
+│   ├── shared/                  # versioned shared source code
 │   ├── scripts/production-server.mjs
 │   └── deploy/ecosystem.config.cjs
-└── shared-runtime/
+└── shared/                      # persistent runtime state, not the release source directory
     ├── data/lumirror.sqlite
     └── lumirror.env
 ```
 
-If the existing server already uses `/www/wwwroot/duanap/apps/lumirror/shared/` for runtime state, keep that path instead of renaming it. The important rule is that the database and environment file live outside immutable release directories and survive a release rollback.
+The two `shared/` directories are at different levels: `releases/<git-sha>/shared/` contains versioned source code, while `/www/wwwroot/duanap/apps/lumirror/shared/` contains persistent production state. The database and environment file must stay outside immutable release directories so they survive a code rollback.
 
-The repository example PM2 configuration expects:
+The repository PM2 configuration expects:
 
 ```text
 /www/wwwroot/duanap/apps/lumirror/shared/lumirror.env
 ```
 
-and the default application configuration expects `DATA_DIR` to point to the corresponding shared data directory.
+and `DATA_DIR` should point to `/www/wwwroot/duanap/apps/lumirror/shared/data`.
 
 ## Required runtime
 
@@ -122,7 +122,7 @@ scripts/production-server.mjs
 deploy/ecosystem.config.cjs
 ```
 
-Before switching traffic, confirm the shared environment and data paths are correct. Then atomically repoint `current` to the new release and reload the single PM2 process using the repository ecosystem file.
+Before switching traffic, confirm the persistent `/www/wwwroot/duanap/apps/lumirror/shared/lumirror.env` and `/www/wwwroot/duanap/apps/lumirror/shared/data` paths are correct. Then atomically repoint `current` to the new release and reload the single PM2 process using the repository ecosystem file.
 
 Verify the local origin first:
 
