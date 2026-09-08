@@ -1,6 +1,11 @@
 // Legacy HTTP smoke tests keep explicit cookie handles instead of a browser cookie jar.
 // Map a handle to the latest Set-Cookie value so password/session rotation is exercised
 // without weakening production auth or rewriting each historical smoke flow.
+const preload = '--import=./scripts/test-cookie-jar.mjs'
+if (!String(process.env.NODE_OPTIONS || '').includes('scripts/test-cookie-jar.mjs')) {
+  process.env.NODE_OPTIONS = `${String(process.env.NODE_OPTIONS || '').trim()} ${preload}`.trim()
+}
+
 const nativeFetch = globalThis.fetch
 const replacements = new Map()
 
