@@ -5,11 +5,14 @@ const root = path.resolve(import.meta.dirname,'..')
 const edgePath = path.join(root,'edge-functions/api/[[default]].js')
 const productionPath = path.join(root,'scripts/production-server.mjs')
 const nodeDirectPath = path.join(root,'server/node-direct-routes.mjs')
+const adminRoutesPath = path.join(root,'server/http/admin-routes.mjs')
+const publicRoutesPath = path.join(root,'server/http/public-routes.mjs')
 const maintenancePath = path.join(root,'server/repositories/sqlite/maintenance-repository.mjs')
 const serverDir = path.join(root,'server')
 
-const [edgeSource,productionSource,nodeDirectSource,maintenanceSource] = await Promise.all([
-  readFile(edgePath,'utf8'),readFile(productionPath,'utf8'),readFile(nodeDirectPath,'utf8'),readFile(maintenancePath,'utf8')
+const [edgeSource,productionSource,nodeDirectSource,adminRoutesSource,publicRoutesSource,maintenanceSource] = await Promise.all([
+  readFile(edgePath,'utf8'),readFile(productionPath,'utf8'),readFile(nodeDirectPath,'utf8'),
+  readFile(adminRoutesPath,'utf8'),readFile(publicRoutesPath,'utf8'),readFile(maintenancePath,'utf8')
 ])
 
 const edgeLines = edgeSource.split('\n')
@@ -55,20 +58,24 @@ const requireMarker = (source,marker,scope) => {
   if (!source.includes(marker)) contractFailures.push({kind:'missing-direct-contract',scope,marker})
 }
 
-// Node must intercept the remaining mutation/read-maintenance routes before the legacy EdgeOne-shaped core.
-requireMarker(productionSource,'const directResponse = await handleNodeDirectRoute({request,env,requestId})','production-server')
-requireMarker(productionSource,'return directResponse || await onRequest({ request, params: {}, env, requestId })','production-server')
-requireMarker(productionSource,'runWithAuditActor(actor','production-server')
-for (const route of [
-  'POST /public/submit-score',
-  'POST /admin/batch',
-  'POST /admin/maintenance/cleanup',
-  'GET /admin/export/json',
-  'POST /admin/export/full-json',
-  'POST /admin/import/json'
-]) requireMarker(nodeDirectSource,route,'node-direct-routes')
+// Production HTTP must dispatch directly into the native Node route table. The route
+// handlers use repositories for normal reads/writes; whole-database writes stay in maintenance only.
+requireMarker(productionSource,'const handleRequest = createRequestHandler(env)','production-server')
+requireMarker(productionSource,'http.createServer((req, res) => { void handleRequest(req, res) })','production-server')
+requireMarker(nodeDirectSource,'export const NODE_ROUTES = [...adminRoutes,...publicRoutes]','node-route-dispatch')
+requireMarker(nodeDirectSource,'return runWithAuditActor(ctx.actor,() => route.handler(ctx))','node-route-dispatch')
+requireMarker(publicRoutesSource,"{method:'POST',path:'/public/submit-score'",'public-native-routes')
+for (const marker of [
+  "route('POST','/admin/batch'",
+  "route('POST','/admin/maintenance/cleanup'",
+  "route('GET','/admin/export/json'",
+  "route('POST','/admin/export/full-json'",
+  "route('POST','/admin/import/preflight'",
+  "route('POST','/admin/import/json'"
+]) requireMarker(adminRoutesSource,marker,'admin-native-routes')
 
-// All other normal mutation domains must remain directly dispatched before loadDatabase().
+// The retained EdgeOne compatibility runtime must still route repository-backed domains
+// before its legacy whole-snapshot fallback boundary.
 const directCore = onRequestLine > 0 ? edgeLines.slice(onRequestLine - 1).join('\n') : ''
 for (const marker of [
   "path === '/public/evaluation-title'",
@@ -91,8 +98,8 @@ for (const marker of [
   "getTaskRepository(context)?.generateTasks",
   "getTaskRepository(context)?.deleteVerifyCode",
   "getTaskRepository(context)?.deleteTask"
-]) requireMarker(directCore,marker,'direct-core')
-requireMarker(directCore,'const db = await loadDatabase(context)','direct-core-fallback-boundary')
+]) requireMarker(directCore,marker,'edge-compatibility-direct-core')
+requireMarker(directCore,'const db = await loadDatabase(context)','edge-compatibility-fallback-boundary')
 
 const EXPECTED_LEGACY_EDGE_SAVE_CALLS = 37
 if (legacyCalls.length !== EXPECTED_LEGACY_EDGE_SAVE_CALLS) contractFailures.push({
@@ -105,6 +112,7 @@ if (maintenanceBulkWrites.length !== 1) contractFailures.push({
 const normalCandidates = [...outsideLegacyCalls,...disallowedNodeMutations,...contractFailures]
 const report = {
   edgeSource:path.relative(root,edgePath).replaceAll('\\','/'),
+  productionDispatch:'native-node-route-table',
   legacyEdgeOneFallbackCalls:legacyCalls.length,
   expectedLegacyEdgeOneFallbackCalls:EXPECTED_LEGACY_EDGE_SAVE_CALLS,
   maintenanceSnapshotReads:'allowed',
