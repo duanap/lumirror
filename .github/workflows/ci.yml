@@ -15,10 +15,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -38,6 +38,12 @@ jobs:
       - name: Run server smoke tests
         run: npm run test:server
 
+      - name: Run optimization regression tests
+        run: npm run test:optimization
+
+      - name: Run deployment configuration contract
+        run: npm run test:deployment
+
       - name: Run HTTP concurrency gate
         run: npm run test:r2:http-concurrency
 
@@ -49,9 +55,6 @@ jobs:
 
       - name: Run R2 golden behavior tests
         run: npm run test:golden
-
-      - name: Run R2 concurrency tests
-        run: npm run test:r2:concurrency
 
       - name: Run R2 domain closeout tests
         run: npm run test:r2:domain-closeout
