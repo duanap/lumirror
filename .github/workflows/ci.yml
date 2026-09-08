@@ -38,6 +38,9 @@ jobs:
       - name: Run server smoke tests
         run: npm run test:server
 
+      - name: Run optimization regression tests
+        run: npm run test:optimization
+
       - name: Run HTTP concurrency gate
         run: npm run test:r2:http-concurrency
 
