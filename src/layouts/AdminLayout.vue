@@ -7,7 +7,7 @@ import {
   TrendCharts, Setting, UploadFilled, Fold, Expand, ArrowDown, Collection,
   UserFilled, Close, Sunny, Moon
 } from '@element-plus/icons-vue'
-import { api, unwrap } from '../lib/api'
+import { ApiError, api, unwrap } from '../lib/api'
 import { can, clearAuth, getStoredUser, storeUser } from '../lib/auth'
 import type { BackendUser } from '../types'
 import { adminThemeLabel, adminThemeMode, resolvedAdminTheme, setAdminThemeMode, type AdminThemeMode } from '../lib/admin-theme'
@@ -73,8 +73,15 @@ async function loadMe() {
   try {
     user.value = unwrap(await api.get<BackendUser>('/admin/me'))
     storeUser(user.value)
-  } catch {
-    logout(false)
+    return true
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.code === 'SESSION_EXPIRED')) {
+      await logout(false)
+      return false
+    }
+    const message = error instanceof ApiError && error.requestId ? `${error.message}（请求编号 ${error.requestId}）` : error instanceof Error ? error.message : '暂时无法刷新账号信息'
+    ElMessage.error(message)
+    return false
   }
 }
 async function logout(callServer = true) {
@@ -82,7 +89,7 @@ async function logout(callServer = true) {
     try { await api.post('/admin/logout') } catch {}
   }
   clearAuth()
-  router.replace('/admin/login')
+  await router.replace('/admin/login')
 }
 function closeMobile() { mobileOpen.value = false }
 function changeTheme(command:string) { setAdminThemeMode(command as AdminThemeMode) }
@@ -93,12 +100,9 @@ async function changeInitialPassword() {
   changingPassword.value = true
   try {
     await api.post('/admin/change-password',passwordForm)
-    if (user.value) {
-      user.value = {...user.value,mustChangePassword:false}
-      storeUser(user.value)
-    }
     Object.assign(passwordForm,{currentPassword:'',newPassword:'',confirmPassword:''})
-    ElMessage.success('密码修改成功')
+    await loadMe()
+    ElMessage.success('密码修改成功，其他旧会话已失效')
     await router.replace('/admin/dashboard')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '密码修改失败')
