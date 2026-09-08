@@ -106,15 +106,15 @@ export const adminRoutes = [
   route('GET','/admin/logs','admin',(ctx) => ok(ctx.env.AUDIT_REPOSITORY.list(ctx.actor,{...Object.fromEntries(ctx.url.searchParams),...pagination(ctx)}))),
   route('POST','/admin/batch','authenticated',(ctx) => ok(ctx.env.BATCH_REPOSITORY.run(ctx.actor,ctx.input))),
   route('POST','/admin/maintenance/cleanup','admin',(ctx) => ok(ctx.env.MAINTENANCE_REPOSITORY.cleanup(ctx.actor))),
-  route('GET','/admin/export/json','admin',(ctx) => ok(ctx.env.MAINTENANCE_REPOSITORY.exportSanitized())),
-  route('POST','/admin/export/full-json','admin',(ctx) => {
+  route('GET','/admin/export/json','admin',async (ctx) => ok(await ctx.env.MAINTENANCE_REPOSITORY.exportSanitized())),
+  route('POST','/admin/export/full-json','admin',async (ctx) => {
     if (ctx.input.confirm !== 'EXPORT_FULL_BACKUP') throw new AppError('完整备份包含敏感数据，请先确认',400,'CONFIRM_REQUIRED')
-    return ok(ctx.env.MAINTENANCE_REPOSITORY.exportFull(ctx.actor))
+    return ok(await ctx.env.MAINTENANCE_REPOSITORY.exportFull(ctx.actor))
   }),
   route('POST','/admin/import/preflight','admin',(ctx) => ok(ctx.env.MAINTENANCE_REPOSITORY.preflight(ctx.input.data))),
-  route('POST','/admin/import/json','admin',(ctx) => {
+  route('POST','/admin/import/json','admin',async (ctx) => {
     if (ctx.input.confirm !== 'IMPORT_REPLACE_DATA' || !ctx.input.previewHash || !ctx.input.revision) throw new AppError('请先预检并确认覆盖当前业务数据',400,'CONFIRM_REQUIRED')
-    const result = ctx.env.MAINTENANCE_REPOSITORY.importData(ctx.input.data,ctx.actor,{previewHash:ctx.input.previewHash,revision:ctx.input.revision})
+    const result = await ctx.env.MAINTENANCE_REPOSITORY.importData(ctx.input.data,ctx.actor,{previewHash:ctx.input.previewHash,revision:ctx.input.revision})
     return ok(result,cookieFor(ctx.env.USER_REPOSITORY.findUser(ctx.actor.userId),ctx.env))
   })
 ]
