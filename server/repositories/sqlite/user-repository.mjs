@@ -1,183 +1,189 @@
-import { randomBytes, pbkdf2Sync, createHash } from 'node:crypto'
 import { appendAuditRecord } from './audit-repository.mjs'
 import { currentAuditActor } from '../../request-context.mjs'
+import { json, parseJson, randomId, transaction, touch, AppError } from './common.mjs'
+import { PASSWORD_ALGORITHM, passwordFields, verifyPassword, credentialIdentity, validatePassword } from '../../security/passwords.mjs'
+import { ROLE_LABELS, userView } from '../../security/permissions.mjs'
 
-const json = (value) => JSON.stringify(value ?? null)
-const parseJson = (value) => value === null || value === undefined || value === '' ? {} : JSON.parse(value)
-const randomId = (prefix) => `${prefix}_${randomBytes(8).toString('hex')}`
-const appError = (message, status = 400, code = 'BAD_REQUEST') => Object.assign(new Error(message), { status, code })
-const ROLE_LABELS = {admin:'管理员',team_leader:'团队长',leader:'领导',member:'成员'}
-const PASSWORD_ALGORITHM = 'pbkdf2-sha256'
-const PASSWORD_ITERATIONS = 210000
+const rowView = (row) => row ? {
+  ...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,
+  departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''
+} : null
+const normalize = (value) => String(value || '').trim()
+const versionOf = (user) => Number.isSafeInteger(Number(user.authVersion)) && Number(user.authVersion) >= 0 ? Number(user.authVersion) : 0
 
 export class SqliteUserRepository {
   constructor(storage) {
     if (!storage?.database) throw new Error('SqliteUserRepository requires relational storage')
     this.database = storage.database
   }
-
-  view(row) {
-    const user = {...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''}
-    return {id:user.id,username:user.username,displayName:user.displayName,role:user.role,roleLabel:ROLE_LABELS[user.role] || user.role,status:user.status,teamId:user.teamId,departmentId:user.departmentId,employeeId:user.employeeId,permissions:user.permissions || [],mustChangePassword:Boolean(user.mustChangePassword),createdAt:user.createdAt,updatedAt:user.updatedAt}
-  }
-
-  rowById(userId) { return this.database.prepare('SELECT id,username,role,status,department_id,team_id,employee_id,payload_json FROM users WHERE id=?').get(userId) }
-  rowByUsername(username) { return this.database.prepare('SELECT id,username,role,status,department_id,team_id,employee_id,payload_json FROM users WHERE lower(username)=lower(?)').get(username) }
+  rowById(id) { return this.database.prepare('SELECT * FROM users WHERE id=?').get(id) }
+  rowByUsername(username) { return this.database.prepare('SELECT * FROM users WHERE lower(username)=lower(?)').get(username) }
+  findUser(id) { return rowView(this.rowById(id)) }
   hasUsers() { return Boolean(this.database.prepare('SELECT 1 FROM users LIMIT 1').get()) }
-  findUser(userId) { const row = this.rowById(userId); return row ? {...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''} : null }
-
+  view(row) { return userView(rowView(row)) }
   list() {
-    const users = this.database.prepare('SELECT id,username,role,status,department_id,team_id,employee_id,payload_json FROM users ORDER BY list_order').all().map((row) => this.view(row))
-    const teams = this.database.prepare('SELECT payload_json FROM teams ORDER BY list_order').all().map((row) => parseJson(row.payload_json))
-    const departments = this.database.prepare('SELECT payload_json FROM departments ORDER BY list_order').all().map((row) => parseJson(row.payload_json))
-    const employees = this.database.prepare('SELECT payload_json FROM employees ORDER BY list_order').all().map((row) => parseJson(row.payload_json))
-    return {items:users,options:{roles:Object.entries(ROLE_LABELS).map(([value,label]) => ({value,label})),teams,departments,employees}}
+    const items = this.database.prepare('SELECT * FROM users ORDER BY list_order').all().map((row) => this.view(row))
+    const read = (table) => this.database.prepare(`SELECT payload_json FROM ${table} ORDER BY list_order`).all().map((row) => parseJson(row.payload_json))
+    return {items,options:{roles:Object.entries(ROLE_LABELS).map(([value,label]) => ({value,label})),teams:read('teams'),departments:read('departments'),employees:read('employees')}}
   }
-
   resolveScope(role, input) {
     if (role === 'admin') return {teamId:'',departmentId:'',employeeId:''}
     if (role === 'team_leader') {
-      const team = this.database.prepare('SELECT id,department_id FROM teams WHERE id=? AND status != \'inactive\'').get(input.teamId)
-      if (!team) throw appError('团队长账号必须绑定有效团队')
+      const team = this.database.prepare("SELECT id,department_id FROM teams WHERE id=? AND status != 'inactive'").get(input.teamId)
+      if (!team) throw new AppError('团队长账号必须绑定有效团队')
       return {teamId:team.id,departmentId:team.department_id,employeeId:''}
     }
     if (role === 'leader') {
       const department = this.database.prepare("SELECT id FROM departments WHERE id=? AND status != 'inactive'").get(input.departmentId)
-      if (!department) throw appError('领导账号必须绑定有效部门')
+      if (!department) throw new AppError('领导账号必须绑定有效部门')
       return {teamId:'',departmentId:department.id,employeeId:''}
     }
     if (role === 'member') {
       const employee = this.database.prepare("SELECT id,team_id,department_id FROM employees WHERE id=? AND status='active'").get(input.employeeId)
-      if (!employee) throw appError('成员账号必须绑定有效成员')
+      if (!employee) throw new AppError('成员账号必须绑定有效成员')
       return {teamId:employee.team_id,departmentId:employee.department_id,employeeId:employee.id}
     }
-    throw appError('角色无效')
+    throw new AppError('角色无效')
   }
-
-  hashPassword(password, salt, iterations = PASSWORD_ITERATIONS) {
-    const rounds = Number(iterations || PASSWORD_ITERATIONS)
-    return pbkdf2Sync(String(password),String(salt),rounds,32,'sha256').toString('hex')
+  validateUsername(username, exceptId = '') {
+    if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) throw new AppError('账号需为 3-32 位字母、数字或 ._-')
+    const duplicate = this.rowByUsername(username)
+    if (duplicate && duplicate.id !== exceptId) throw new AppError('账号已存在',409,'USERNAME_EXISTS')
   }
-  legacyHash(password, salt) { return createHash('sha256').update(`${salt}:${password}:employee-review`).digest('hex') }
-  verifyPassword(password, user) {
-    if (!user?.passwordHash || !user?.salt) return false
-    return user.passwordAlgorithm === PASSWORD_ALGORITHM
-      ? this.hashPassword(password,user.salt,Number(user.passwordIterations || PASSWORD_ITERATIONS)) === user.passwordHash
-      : this.legacyHash(password,user.salt) === user.passwordHash
+  assertActiveAdminRemains(user) {
+    const others = Number(this.database.prepare("SELECT COUNT(*) AS value FROM users WHERE role='admin' AND status='active' AND id != ?").get(user.id).value)
+    if (others + (user.role === 'admin' && user.status === 'active' ? 1 : 0) < 1) throw new AppError('系统必须保留至少一个启用管理员',409,'LAST_ADMIN')
   }
-  passwordFields(password, forceChange) {
-    const salt = randomBytes(12).toString('hex')
-    return {salt,passwordHash:this.hashPassword(password,salt,PASSWORD_ITERATIONS),passwordAlgorithm:PASSWORD_ALGORITHM,passwordIterations:PASSWORD_ITERATIONS,mustChangePassword:Boolean(forceChange)}
-  }
-
-  login(username, password) {
-    const row = this.rowByUsername(username)
-    if (!row || row.status !== 'active') return null
-    const user = {...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''}
-    if (!this.verifyPassword(password,user)) return null
-    if (user.passwordAlgorithm !== PASSWORD_ALGORITHM) {
-      const fields = this.passwordFields(password,Boolean(user.mustChangePassword))
-      const updated = {...user,...fields,updatedAt:new Date().toISOString()}
-      this.database.exec('BEGIN IMMEDIATE')
-      try { this.updateRow(updated); this.database.exec('COMMIT') } catch (cause) { try { this.database.exec('ROLLBACK') } catch {}; throw cause }
-      return updated
-    }
-    return user
-  }
-
   updateRow(user) {
-    const payload = {...user}
-    delete payload.id; delete payload.username; delete payload.role; delete payload.status; delete payload.departmentId; delete payload.teamId; delete payload.employeeId
-    this.database.prepare('UPDATE users SET username=?,role=?,status=?,department_id=?,team_id=?,employee_id=?,payload_json=? WHERE id=?').run(user.username,user.role,user.status,user.departmentId || null,user.teamId || null,user.employeeId || null,json({...payload,id:user.id,username:user.username,role:user.role,status:user.status,departmentId:user.departmentId,teamId:user.teamId,employeeId:user.employeeId}),user.id)
+    this.database.prepare('UPDATE users SET username=?,role=?,status=?,department_id=?,team_id=?,employee_id=?,payload_json=? WHERE id=?')
+      .run(user.username,user.role,user.status,user.departmentId || null,user.teamId || null,user.employeeId || null,json(user),user.id)
+  }
+  updateInsert(user, order) {
+    this.database.prepare('INSERT INTO users (id,username,role,status,department_id,team_id,employee_id,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(user.id,user.username,user.role,user.status,user.departmentId || null,user.teamId || null,user.employeeId || null,json(user),order)
+  }
+  assertActorCurrent() {
+    const actor = currentAuditActor()
+    if (!actor?.userId || actor.authVersion === undefined) return
+    const user = this.findUser(actor.userId)
+    if (!user || user.status !== 'active' || versionOf(user) !== Number(actor.authVersion) || user.role !== actor.role) throw new AppError('账号权限已发生变化，请重新登录',401,'SESSION_EXPIRED')
+  }
+  audit(action, detail, at) { appendAuditRecord(this.database,action,detail,currentAuditActor() || {},at); touch(this.database,at) }
+
+  async login(username, password) {
+    const original = rowView(this.rowByUsername(normalize(username)))
+    const valid = await verifyPassword(password,original?.status === 'active' ? original : null)
+    if (!valid || !original) return null
+    const upgraded = original.passwordAlgorithm !== PASSWORD_ALGORITHM ? await passwordFields(password,original.mustChangePassword) : null
+    // Re-read AFTER all expensive asynchronous work, then verify credentials under the write lock.
+    return transaction(this.database,() => {
+      const current = this.findUser(original.id)
+      if (!current || current.status !== 'active' || credentialIdentity(current) !== credentialIdentity(original)) return null
+      if (!upgraded) return current
+      const user = {...current,...upgraded,updatedAt:new Date().toISOString()}
+      this.updateRow(user)
+      touch(this.database,user.updatedAt)
+      return user
+    })
   }
 
-  create(input) {
-    const username = String(input.username || '').trim()
-    const password = String(input.password || '')
-    if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) throw appError('账号需为 3-32 位字母、数字或 ._-')
-    if (this.rowByUsername(username)) throw appError('账号已存在',409)
-    if (!ROLE_LABELS[input.role]) throw appError('角色无效')
-    if (password.length < 8) throw appError('初始密码至少 8 位')
-    const scope = this.resolveScope(input.role,input)
-    const createdAt = new Date().toISOString()
-    const user = {id:randomId('user'),username,displayName:String(input.displayName || '').trim() || username,role:input.role,...scope,status:input.status === 'inactive' ? 'inactive' : 'active',createdAt,updatedAt:createdAt,...this.passwordFields(password,input.mustChangePassword !== false)}
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
+  async create(input) {
+    const username = normalize(input.username)
+    this.validateUsername(username)
+    if (!Object.hasOwn(ROLE_LABELS,input.role)) throw new AppError('角色无效')
+    const fields = await passwordFields(input.password,input.mustChangePassword !== false)
+    return transaction(this.database,() => {
+      this.assertActorCurrent()
+      this.validateUsername(username)
+      const scope = this.resolveScope(input.role,input)
+      const now = new Date().toISOString()
+      const user = {id:randomId('user'),username,displayName:normalize(input.displayName) || username,role:input.role,...scope,status:input.status === 'inactive' ? 'inactive' : 'active',createdAt:now,updatedAt:now,authVersion:0,...fields}
       const order = Number(this.database.prepare('SELECT COALESCE(MAX(list_order)+1,0) AS value FROM users').get().value)
       this.updateInsert(user,order)
-      appendAuditRecord(this.database,'user.create',{targetUserId:user.id,role:user.role},currentAuditActor(),createdAt)
-      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(createdAt)
-      this.database.exec('COMMIT'); return this.view(this.rowById(user.id))
-    } catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
+      this.audit('user.create',{targetUserId:user.id,role:user.role},now)
+      return userView(user)
+    })
   }
 
-  updateInsert(user, order) {
-    this.database.prepare('INSERT INTO users (id,username,role,status,department_id,team_id,employee_id,payload_json,list_order) VALUES (?,?,?,?,?,?,?,?,?)').run(user.id,user.username,user.role,user.status,user.departmentId || null,user.teamId || null,user.employeeId || null,json(user),order)
-  }
-
-  update(userId, input) {
-    const row = this.rowById(userId)
-    if (!row) throw appError('账号不存在',404,'NOT_FOUND')
-    const previous = {...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''}
-    const username = String(input.username || previous.username).trim()
-    if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) throw appError('账号需为 3-32 位字母、数字或 ._-')
-    const duplicate = this.rowByUsername(username)
-    if (duplicate && duplicate.id !== userId) throw appError('账号已存在',409)
-    const role = input.role || previous.role
-    if (!ROLE_LABELS[role]) throw appError('角色无效')
-    const scope = this.resolveScope(role,input)
-    const next = {...previous,username,displayName:String(input.displayName || '').trim() || previous.displayName,role,...scope,status:input.status === 'inactive' ? 'inactive' : 'active',updatedAt:new Date().toISOString()}
-    if (String(input.password || '').length) {
-      if (String(input.password).length < 8) throw appError('新密码至少 8 位')
-      Object.assign(next,this.passwordFields(String(input.password),true))
-    }
-    const activeAdmins = this.database.prepare("SELECT COUNT(*) AS value FROM users WHERE role='admin' AND status='active' AND id != ?").get(userId).value + (next.role === 'admin' && next.status === 'active' ? 1 : 0)
-    if (Number(activeAdmins) < 1) throw appError('系统必须保留至少一个启用管理员',409)
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
+  async update(userId, input) {
+    if (!this.findUser(userId)) throw new AppError('账号不存在',404,'NOT_FOUND')
+    const fields = input.password !== undefined && input.password !== '' ? await passwordFields(input.password,true) : null
+    return transaction(this.database,() => {
+      this.assertActorCurrent()
+      const previous = this.findUser(userId)
+      if (!previous) throw new AppError('账号不存在',404,'NOT_FOUND')
+      const username = normalize(input.username ?? previous.username)
+      this.validateUsername(username,userId)
+      const role = input.role ?? previous.role
+      if (!Object.hasOwn(ROLE_LABELS,role)) throw new AppError('角色无效')
+      if (input.status !== undefined && !['active','inactive'].includes(input.status)) throw new AppError('账号状态无效')
+      const scope = this.resolveScope(role,{...previous,...input})
+      const next = {...previous,username,displayName:normalize(input.displayName ?? previous.displayName) || username,role,...scope,status:input.status ?? previous.status,updatedAt:new Date().toISOString(),...(fields || {})}
+      const securityChanged = Boolean(fields) || ['role','status','teamId','departmentId','employeeId'].some((key) => next[key] !== previous[key])
+      next.authVersion = versionOf(previous)+(securityChanged ? 1 : 0)
+      this.assertActiveAdminRemains(next)
       this.updateRow(next)
-      appendAuditRecord(this.database,'user.update',{targetUserId:userId},currentAuditActor(),next.updatedAt)
-      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt)
-      this.database.exec('COMMIT')
-      return this.view(this.rowById(userId))
-    }
-    catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
+      this.audit('user.update',{targetUserId:userId},next.updatedAt)
+      return userView(next)
+    })
   }
 
-  changePassword(userId, currentPassword, newPassword) {
-    const row = this.rowById(userId)
-    if (!row || row.status !== 'active') throw appError('后台登录已失效',401)
-    const user = {...parseJson(row.payload_json),id:row.id,username:row.username,role:row.role,status:row.status,departmentId:row.department_id || '',teamId:row.team_id || '',employeeId:row.employee_id || ''}
-    if (!this.verifyPassword(currentPassword,user)) throw appError('当前密码错误',403)
-    if (String(newPassword).length < 8) throw appError('新密码至少 8 位')
-    if (String(newPassword) === String(currentPassword)) throw appError('新密码不能与当前密码相同')
-    const next = {...user,...this.passwordFields(newPassword,false),updatedAt:new Date().toISOString()}
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
+  async changePassword(userId, currentPassword, newPassword) {
+    const original = this.findUser(userId)
+    if (!original || original.status !== 'active') throw new AppError('后台登录已失效',401,'SESSION_EXPIRED')
+    validatePassword(newPassword,8)
+    if (newPassword === currentPassword) throw new AppError('新密码不能与当前密码相同')
+    if (!await verifyPassword(currentPassword,original)) throw new AppError('当前密码错误',403,'CURRENT_PASSWORD_INVALID')
+    const fields = await passwordFields(newPassword,false)
+    return transaction(this.database,() => {
+      this.assertActorCurrent()
+      const current = this.findUser(userId)
+      if (!current || current.status !== 'active' || credentialIdentity(current) !== credentialIdentity(original) || versionOf(current) !== versionOf(original)) throw new AppError('账号已更新，请重新登录',401,'SESSION_EXPIRED')
+      const next = {...current,...fields,authVersion:versionOf(current)+1,updatedAt:new Date().toISOString()}
       this.updateRow(next)
-      appendAuditRecord(this.database,'password.change',{userId},currentAuditActor(),next.updatedAt)
-      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(next.updatedAt)
-      this.database.exec('COMMIT')
+      this.audit('password.change',{userId},next.updatedAt)
       return {changed:true}
-    }
-    catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
+    })
+  }
+
+  setStatus(userId, status, actor) {
+    if (actor.role !== 'admin') throw new AppError('当前账号没有此操作权限',403,'FORBIDDEN')
+    if (!['active','inactive'].includes(status)) throw new AppError('账号状态无效')
+    if (userId === actor.userId && status === 'inactive') throw new AppError('不能停用当前登录账号',409,'CURRENT_USER')
+    return transaction(this.database,() => {
+      this.assertActorCurrent()
+      const previous = this.findUser(userId)
+      if (!previous) throw new AppError('账号不存在',404,'NOT_FOUND')
+      const next = {...previous,status,authVersion:versionOf(previous)+(status !== previous.status ? 1 : 0),updatedAt:new Date().toISOString()}
+      this.assertActiveAdminRemains(next)
+      this.updateRow(next)
+      touch(this.database,next.updatedAt)
+      return {updated:true}
+    })
+  }
+
+  revokeSessions(userId) {
+    return transaction(this.database,() => {
+      const user = this.findUser(userId)
+      if (!user || user.status !== 'active') throw new AppError('后台登录已失效',401,'SESSION_EXPIRED')
+      const now = new Date().toISOString()
+      this.updateRow({...user,authVersion:versionOf(user)+1,updatedAt:now})
+      this.audit('session.revoke',{userId},now)
+      return {loggedOut:true}
+    })
   }
 
   delete(userId, currentUserId, options = {}) {
-    const row = this.rowById(userId)
-    if (!row) throw appError('账号不存在',404,'NOT_FOUND')
-    if (userId === currentUserId) throw appError('不能删除当前登录账号',409)
-    if (Number(this.database.prepare('SELECT COUNT(*) AS value FROM users').get().value) <= 1) throw appError('至少保留一个后台账号',409)
-    if (row.role === 'admin' && row.status === 'active' && Number(this.database.prepare("SELECT COUNT(*) AS value FROM users WHERE role='admin' AND status='active' AND id != ?").get(userId).value) < 1) throw appError('不能删除最后一个启用管理员',409)
-    const updatedAt = new Date().toISOString()
-    this.database.exec('BEGIN IMMEDIATE')
-    try {
+    return transaction(this.database,() => {
+      const user = this.findUser(userId)
+      if (!user) throw new AppError('账号不存在',404,'NOT_FOUND')
+      if (userId === currentUserId) throw new AppError('不能删除当前登录账号',409,'CURRENT_USER')
+      this.assertActiveAdminRemains({...user,status:'inactive'})
       this.database.prepare('DELETE FROM users WHERE id=?').run(userId)
-      if (options.audit !== false) appendAuditRecord(this.database,'user.delete',{targetUserId:userId},currentAuditActor(),updatedAt)
-      this.database.prepare('UPDATE app_state SET updated_at=? WHERE singleton=1').run(updatedAt)
-      this.database.exec('COMMIT')
+      const now = new Date().toISOString()
+      if (options.audit !== false) this.audit('user.delete',{targetUserId:userId},now)
+      else touch(this.database,now)
       return {deleted:true}
-    }
-    catch (cause) { try { this.database.exec('ROLLBACK') } catch {} ; throw cause }
+    })
   }
 }
