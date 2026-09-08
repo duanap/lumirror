@@ -18,7 +18,7 @@
     "test:r2:http-concurrency": "node --import ./scripts/test-cookie-jar.mjs scripts/r2-concurrency.mjs",
     "test:r2:repository-concurrency": "node scripts/r2-repository-concurrency.mjs",
     "test:r2:queue-removal": "node scripts/r2-queue-removal-contract.mjs",
-    "test:r2:domain-closeout": "node scripts/r2-domain-closeout.mjs && node scripts/r2-participant-invite-contract.mjs",
+    "test:r2:domain-closeout": "node --test scripts/tests/domain-closeout-async.test.mjs && node scripts/r2-participant-invite-contract.mjs",
     "check:snapshot-usage": "node scripts/snapshot-usage-gate.mjs",
     "repro:concurrency": "node scripts/concurrency-repro.mjs",
     "check:functions": "node --check \"edge-functions/api/[[default]].js\"",
