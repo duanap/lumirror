@@ -1,43 +1,50 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## Production architecture
 
-Lumirror is a Vue 3 + TypeScript + Vite app with an EdgeOne Functions backend.
+Lumirror is a Vue 3 + TypeScript + Vite application. Production uses Nginx, one Node.js process managed by PM2 in fork mode, and relational SQLite. The global request queue has been removed. Do not restore a global request mutex or enable PM2 cluster mode as a shortcut.
 
-- `src/` contains the frontend application.
-- `src/views/public/` contains public invite and evaluation flows.
-- `src/views/admin/` contains the admin console pages.
-- `src/components/`, `src/layouts/`, `src/lib/`, and `src/styles/` hold shared UI, layout, helpers, and global styles.
-- `edge-functions/api/[[default]].js` is the EdgeOne API entrypoint.
-- `scripts/` contains local API and smoke-test utilities.
-- `public/` contains static assets and routing files.
-- `dist/` is generated output and should not be edited directly.
+- `src/`: frontend views, components, layouts, API clients and styles.
+- `scripts/production-server.mjs`: production HTTP entrypoint and dependency assembly.
+- `server/`: Node routing, request context, security, business services and SQLite repositories.
+- `scripts/sqlite-storage.mjs`: relational schema, migrations and maintenance snapshot adapter.
+- `edge-functions/api/[[default]].js`: retained EdgeOne compatibility runtime. Production still delegates some routes here during migration; do not remove or silently change its behavior.
+- `scripts/`: local tools and automated regression tests.
+- `deploy/`: example Nginx and PM2 configuration, not the live server configuration.
+- `docs-center/`: user-facing documentation; `docs/`: engineering records.
+- `dist/`, `docs-dist/` and `node_modules/`: generated output; do not commit.
 
-## Build, Test, and Development Commands
+## Change boundaries
 
-Run commands from the repository root:
+Keep routing and request validation separate from business rules and SQL. Prefer existing helpers before adding a new abstraction. Make normal production reads and writes through repositories; reserve whole-database snapshots for explicit bootstrap, export and restore operations. Keep SQLite transactions synchronous and short; never await network or password hashing while holding a write transaction.
 
-- `npm run dev`: start the Vite dev server on `127.0.0.1`.
-- `npm run dev:api`: start the local API shim from `scripts/local-api.mjs`.
-- `npm run check:functions`: syntax-check the EdgeOne function file.
-- `npm run test:api`: run API smoke tests for auth, invites, tasks, scoring, and deletion flows.
-- `npm run build`: run `vue-tsc --noEmit` and build production assets.
-- `npm run preview`: preview the built frontend.
+Preserve anonymous evaluation boundaries. Do not log passwords, authorization headers, cookies, complete invite codes, complete timed links or individual score values. Treat full backups as sensitive. Statistical exports must use an explicit allowlist and must not include task-to-participant mappings or stable individual score identifiers.
 
-## Coding Style & Naming Conventions
+Use explicit request/response types in TypeScript and `<script setup lang="ts">` in Vue. Use two-space indentation, PascalCase component names and descriptive helper names. Add regression tests for behavior changes before refactoring unrelated code.
 
-Use TypeScript for frontend code and keep Vue files in `<script setup lang="ts">` style. Prefer existing helper modules in `src/lib/` before adding new utilities. Use two-space indentation in Vue, TypeScript, JavaScript, JSON, and Markdown files. Name Vue components in PascalCase, route views by feature name, and helper files in lower camel or short descriptive names such as `batch.ts` and `columns.ts`.
+## Validation
 
-Keep backend changes scoped inside `edge-functions/api/[[default]].js` unless a new script is clearly needed.
+Run the applicable commands from the repository root:
 
-## Testing Guidelines
+- `npm ci`
+- `npm run check:functions`
+- `npm run test:api`
+- `npm run test:server`
+- `npm run test:golden`
+- `npm run test:r2:http-concurrency`
+- `npm run test:r2:repository-concurrency`
+- `npm run test:r2:queue-removal`
+- `npm run test:r2:domain-closeout`
+- `npm run check:snapshot-usage -- --expect-clean`
+- `npm run build`
+- `npm run docs:validate` and `npm run docs:build`
 
-There is no separate unit-test framework configured. Treat `npm run test:api`, `npm run check:functions`, and `npm run build` as the required validation set before packaging or deployment. Update `scripts/api-smoke.mjs` when API behavior intentionally changes, especially around invitation links, scoring, deletion, or RBAC.
+Run new targeted regression tests as well. A successful syntax check is not a runtime test. A previous commit's successful CI is not evidence for a new commit. Record exactly which checks ran and which could not run, including browser and deployment checks.
 
-## Commit & Pull Request Guidelines
+## Git, releases and deployment
 
-No local Git history was available in this environment. Use concise imperative commit messages, for example `Fix invite code display` or `Add dashboard team grouping`. Pull requests should include a short summary, validation commands run, screenshots for visible admin/public UI changes, and notes for EdgeOne deployment or data migration risks.
+Work in a dedicated branch, use focused commits, and open a pull request against the current `main`. Include the source baseline, behavior changes, validation results and rollback implications. Do not rewrite other contributors' work or force-push shared branches.
 
-## Deployment & Packaging Notes
+The project owner deploys production. Repository changes do not authorize server access, production data changes, secret rotation or deployment. Do not create automatic deployment workflows. Preserve Schema 4 unless a separate reviewed migration and restoration plan explicitly changes it. Never open a database created by a newer schema version with an older application.
 
-For EdgeOne upload packages, include source/config files only: `src`, `public`, `edge-functions`, `index.html`, `package.json`, `package-lock.json`, `tsconfig.json`, `vite.config.ts`, and `edgeone.json`. Exclude `node_modules`, `dist`, `.git`, `.codex`, `.agents`, docs, scripts unless specifically required, and old zip files. Package names should follow `Lumirror-v<version>.zip`.
+Before release, verify a backup and restore using synthetic data, retain the prior application release and provide a deployment checklist. Do not label a release deployment-ready while a required validation is failing or unverified.
