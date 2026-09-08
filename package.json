@@ -11,6 +11,7 @@
     "start": "node scripts/production-server.mjs",
     "test:api": "node scripts/api-smoke.mjs",
     "test:server": "node scripts/server-smoke.mjs",
+    "test:optimization": "node --test scripts/tests/optimization-core.test.mjs",
     "test:golden": "node scripts/r2-golden.mjs",
     "test:r2:current-task": "node scripts/current-task-repository-smoke.mjs",
     "test:r2:concurrency": "node scripts/r2-concurrency.mjs",
