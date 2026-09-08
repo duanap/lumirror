@@ -45,7 +45,7 @@ try {
 } catch (error) { storage.close(); throw error }
 const env = createApplication(storage,configuration)
 const handleRequest = createRequestHandler(env)
-const server = http.createServer((req,res) => { void handleRequest(req,res) })
+const server = http.createServer((req, res) => { void handleRequest(req, res) })
 server.requestTimeout = 15000
 server.headersTimeout = 10000
 server.keepAliveTimeout = 5000
