@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Download, Plus, Delete } from '@element-plus/icons-vue'
+import { CopyDocument, Download, Plus, Delete } from '../../components/icons'
 import AdminPage from '../../components/AdminPage.vue'
 import ColumnSettings from '../../components/ColumnSettings.vue'
 import { api, unwrap } from '../../lib/api'

@@ -75,7 +75,6 @@ export function createRequestHandler(env,{dispatch = handleNodeDirectRoute,logge
       if (ctx.request) response = responseHeaders(response,ctx)
       res.writeHead(status,Object.fromEntries(response.headers))
       res.end(req.method === 'HEAD' ? undefined : Buffer.from(await response.arrayBuffer()))
-      if (status === 413) res.once('finish',() => req.destroy())
     } finally {
       const durationMs = Math.round((performance.now()-started)*100)/100
       logger.log(JSON.stringify({timestamp:new Date().toISOString(),requestId,method:req.method || 'GET',route:ctx.routeTemplate,status,durationMs,userRole:ctx.actor?.role || 'anonymous',errorCode,level:status>=500 ? 'error' : status>=400 || durationMs>500 ? 'warn' : 'info'}))

@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Lock, ArrowRight, Link, Timer } from '@element-plus/icons-vue'
+import { Lock, ArrowRight, Link, Timer } from '../../components/icons'
 import PublicShell from '../../layouts/PublicShell.vue'
 import { api } from '../../lib/api'
 

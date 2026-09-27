@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus } from '../../components/icons'
 import AdminPage from '../../components/AdminPage.vue'
 import ColumnSettings from '../../components/ColumnSettings.vue'
 import { api, unwrap } from '../../lib/api'

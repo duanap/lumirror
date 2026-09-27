@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CircleCheckFilled } from '@element-plus/icons-vue'
+import { CircleCheckFilled } from '../../components/icons'
 import PublicShell from '../../layouts/PublicShell.vue'
 </script>
 
