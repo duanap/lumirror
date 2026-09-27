@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Plus, Search, Refresh } from '@element-plus/icons-vue'
+import { Plus, Search, Refresh } from '../../components/icons'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AdminPage from '../../components/AdminPage.vue'
 import ColumnSettings from '../../components/ColumnSettings.vue'

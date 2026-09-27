@@ -28,7 +28,7 @@
     "docs:validate": "npx --yes @docmd/core@0.9.4 validate"
   },
   "dependencies": {
-    "@element-plus/icons-vue": "^2.3.1",
+    "@lucide/vue": "^1.48.0",
     "element-plus": "^2.11.8",
     "vue": "^3.5.22",
     "vue-router": "^4.6.3"

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Timer, User, Check } from '@element-plus/icons-vue'
+import { Timer, User, Check } from '../../components/icons'
 import PublicShell from '../../layouts/PublicShell.vue'
 import IconGlyph from '../../components/IconGlyph.vue'
 import EmployeeAvatar from '../../components/EmployeeAvatar.vue'

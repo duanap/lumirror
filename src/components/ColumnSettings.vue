@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Setting } from '@element-plus/icons-vue'
+import { Setting } from './icons'
 import type { ColumnOption } from '../lib/columns'
 
 defineProps<{

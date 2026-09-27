@@ -6,7 +6,7 @@ import {
   DataAnalysis, User, OfficeBuilding, Grid, Calendar, Tickets, Key, List,
   TrendCharts, Setting, UploadFilled, Fold, Expand, ArrowDown, Collection,
   UserFilled, Close, Sunny, Moon
-} from '@element-plus/icons-vue'
+} from '../components/icons'
 import { ApiError, api, unwrap } from '../lib/api'
 import { can, clearAuth, getStoredUser, storeUser } from '../lib/auth'
 import type { BackendUser } from '../types'

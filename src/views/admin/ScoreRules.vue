@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { View, CircleCheckFilled, WarningFilled, Plus, Delete } from '@element-plus/icons-vue'
+import { View, CircleCheckFilled, WarningFilled, Plus, Delete } from '../../components/icons'
 import AdminPage from '../../components/AdminPage.vue'
 import { api, unwrap } from '../../lib/api'
 import { ruleFormula } from '../../lib/score'

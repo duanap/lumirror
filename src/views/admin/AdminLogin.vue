@@ -2,7 +2,7 @@
 import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { User, Lock } from '@element-plus/icons-vue'
+import { User, Lock } from '../../components/icons'
 import { api } from '../../lib/api'
 import { storeUser } from '../../lib/auth'
 

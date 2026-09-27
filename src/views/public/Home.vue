@@ -13,7 +13,7 @@ import {
   Setting,
   TrendCharts,
   UserFilled
-} from '@element-plus/icons-vue'
+} from '../../components/icons'
 import { api } from '../../lib/api'
 
 const router = useRouter()
