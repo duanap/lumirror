@@ -48,3 +48,7 @@ Work in a dedicated branch, use focused commits, and open a pull request against
 The project owner deploys production. Repository changes do not authorize server access, production data changes, secret rotation or deployment. Do not create automatic deployment workflows. Preserve Schema 4 unless a separate reviewed migration and restoration plan explicitly changes it. Never open a database created by a newer schema version with an older application.
 
 Before release, verify a backup and restore using synthetic data, retain the prior application release and provide a deployment checklist. Do not label a release deployment-ready while a required validation is failing or unverified.
+
+## Codex Cloud migration
+
+Read `CODEX_CLOUD.md` for the migrated source baseline, dependency installation, startup, development configuration, and pending cloud checks.
